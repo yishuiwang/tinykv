@@ -562,10 +562,10 @@ func TestProposal2AB(t *testing.T) {
 }
 
 // TestHandleMessageType_MsgAppend ensures:
-// 1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
-// 2. If an existing entry conflicts with a new one (same index but different terms),
-//    delete the existing entry and all that follow it; append any new entries not already in the log.
-// 3. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry).
+//  1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
+//  2. If an existing entry conflicts with a new one (same index but different terms),
+//     delete the existing entry and all that follow it; append any new entries not already in the log.
+//  3. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry).
 func TestHandleMessageType_MsgAppend2AB(t *testing.T) {
 	tests := []struct {
 		m       pb.Message
@@ -798,7 +798,6 @@ func testCandidateResetTerm(t *testing.T, mt pb.MessageType) {
 	// leader sends to isolated candidate
 	// and expects candidate to revert to follower
 	nt.send(pb.Message{From: 1, To: 3, Term: a.Term, MsgType: mt})
-
 	if c.State != StateFollower {
 		t.Errorf("state = %s, want %s", c.State, StateFollower)
 	}
