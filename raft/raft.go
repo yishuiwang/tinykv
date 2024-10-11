@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"log"
 	"math/rand/v2"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -283,6 +282,8 @@ func (r *Raft) RequestVote() {
 		if id == r.id {
 			continue
 		}
+		// 初始化投票记录
+		r.votes[id] = false
 		msg := pb.Message{
 			MsgType: pb.MessageType_MsgRequestVote,
 			From:    r.id,
@@ -348,10 +349,7 @@ func (r *Raft) HandleVoteResponse(m pb.Message) {
 			count++
 		}
 	}
-	log.Println("r.votes: ", r.votes)
-	if count > len(r.Prs)/2 {
-		log.Println("节点", r.id, "成为leader")
-		log.Println("count: ", count, "len: ", len(r.Prs))
+	if count > len(r.Prs)/2 && r.State == StateCandidate {
 		r.becomeLeader()
 	}
 }
@@ -415,6 +413,13 @@ func (r *Raft) Step(m pb.Message) error {
 			r.HandleRequestVote(m)
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
+		case pb.MessageType_MsgBeat:
+			for id := range r.Prs {
+				if id == r.id {
+					continue
+				}
+				r.sendHeartbeat(id)
+			}
 		}
 	}
 	return nil
@@ -436,6 +441,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.msgs = append(r.msgs, *msg)
 		return
 	}
+	r.Term = m.Term
 	r.msgs = append(r.msgs, *msg)
 }
 
@@ -452,7 +458,6 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		msg.Reject = true
 	}
 	if m.Term > r.Term {
-		log.Println("handleHeartbeat: ", m.Term, r.Term)
 		r.becomeFollower(m.Term, m.From)
 		msg.Reject = false
 		msg.Term = r.Term
