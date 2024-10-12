@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"log"
 	"math/rand/v2"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -189,6 +190,11 @@ func newRaft(c *Config) *Raft {
 	r.electionElapsed = 0
 	r.leadTransferee = None
 	r.PendingConfIndex = 0
+
+	for _, v := range c.peers {
+		r.Prs[v] = &Progress{0, 1}
+	}
+	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{Term: 0, Index: 0, Data: []byte("init")})
 	return r
 }
 
@@ -196,16 +202,29 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
+	pr := r.Prs[to]
+	entry := make([]*pb.Entry, 0)
+	for i := pr.Next; i <= r.RaftLog.LastIndex(); i++ {
+		entry = append(entry, &r.RaftLog.entries[i])
+	}
+	// logTerm代表论文中的prevLogTerm
+	logTerm := r.RaftLog.entries[pr.Match].Term
+	// index代表论文中的prevLogIndex
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		From:    r.id,
 		To:      to,
 		Term:    r.Term,
-		// Entries: r.RaftLog.allEntries(),
-		LogTerm: 0,
-		Index:   0,
+		Commit:  r.RaftLog.committed,
+		Entries: entry,
+		LogTerm: logTerm,
+		Index:   pr.Match,
 	}
+	// 更新leader
 	r.msgs = append(r.msgs, msg)
+	r.Prs[r.id].Match = r.RaftLog.LastIndex()
+	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
+
 	return true
 }
 
@@ -276,6 +295,32 @@ func (r *Raft) becomeCandidate() {
 	// Send RequestVote RPCs to all other servers
 }
 
+// becomeLeader transform this peer's state to leader
+func (r *Raft) becomeLeader() {
+	// Your Code Here (2A).
+	// NOTE: Leader should propose a noop entry on its term
+	r.State = StateLeader
+	r.Lead = r.id
+	r.heartbeatElapsed = 0
+
+	noop := pb.Entry{
+		Term:  r.Term,
+		Index: r.RaftLog.LastIndex() + 1,
+		Data:  nil,
+	}
+
+	r.RaftLog.entries = append(r.RaftLog.entries, noop)
+
+	for id := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		r.sendAppend(id)
+	}
+
+	// r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&noop}})
+}
+
 // RequestVote 请求所有其他节点投票
 func (r *Raft) RequestVote() {
 	for id := range r.Prs {
@@ -299,7 +344,24 @@ func (r *Raft) RequestVote() {
 }
 
 // HandleMsgPropose 处理Propose消息
-func (r *Raft) HandleMsgPropose() {
+func (r *Raft) HandleMsgPropose(m pb.Message) {
+	if len(m.Entries) == 0 {
+		// TODO:处理空消息
+		log.Println("entries is empty")
+	}
+
+	for _, entry := range m.Entries {
+		entry.Term = r.Term
+		entry.Index = r.RaftLog.LastIndex() + 1
+
+		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+	}
+
+	// 如果只有一个节点, 则直接commit
+	if len(r.Prs) == 1 {
+		r.RaftLog.committed = r.RaftLog.LastIndex()
+	}
+
 	for id := range r.Prs {
 		if id == r.id {
 			continue
@@ -354,13 +416,27 @@ func (r *Raft) HandleVoteResponse(m pb.Message) {
 	}
 }
 
-// becomeLeader transform this peer's state to leader
-func (r *Raft) becomeLeader() {
-	// Your Code Here (2A).
-	// NOTE: Leader should propose a noop entry on its term
-	r.State = StateLeader
-	r.Lead = r.id
-	r.heartbeatElapsed = 0
+// HandleAppendResponse 处理AppendEntries响应
+func (r *Raft) HandleAppendResponse(m pb.Message) {
+	if m.Reject {
+		// TODO
+	}
+	// 更新pr, m.Index是follower.RaftLog.LastIndex()
+	pr := r.Prs[m.From]
+	pr.Match = m.Index
+	pr.Next = m.Index + 1
+	r.Prs[m.From] = pr
+
+	count := 0
+	for _, pr := range r.Prs {
+		if pr.Match >= m.Index {
+			count++
+		}
+	}
+	if count > len(r.Prs)/2 {
+		r.RaftLog.committed = max(r.RaftLog.committed, m.Index)
+	}
+
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -401,7 +477,7 @@ func (r *Raft) Step(m pb.Message) error {
 	case StateLeader:
 		switch m.MsgType {
 		case pb.MessageType_MsgPropose:
-			r.HandleMsgPropose()
+			r.HandleMsgPropose(m)
 		case pb.MessageType_MsgRequestVoteResponse:
 			r.HandleVoteResponse(m)
 		case pb.MessageType_MsgAppend:
@@ -420,6 +496,8 @@ func (r *Raft) Step(m pb.Message) error {
 				}
 				r.sendHeartbeat(id)
 			}
+		case pb.MessageType_MsgAppendResponse:
+			r.HandleAppendResponse(m)
 		}
 	}
 	return nil
@@ -442,6 +520,18 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 	r.Term = m.Term
+
+	// TODO
+	// if len(m.Entries) == 0 {
+	// 	return
+	// }
+
+	// 添加新的entry
+	begin := r.RaftLog.LastIndex() - m.Index + 1
+	for i := begin; i < uint64(len(m.Entries)); i++ {
+		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
+	}
+	msg.Index = r.RaftLog.LastIndex()
 	r.msgs = append(r.msgs, *msg)
 }
 

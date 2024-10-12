@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -50,18 +52,25 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	// firstIndex = dummyIndex + 1
+	dummyIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
+	firstIndex, _ := storage.FirstIndex()
+	lastIndex, _ := storage.LastIndex()
+	entries, _ := storage.Entries(firstIndex, lastIndex+1)
+
 	return &RaftLog{
 		storage:         storage,
 		committed:       0,
 		applied:         0,
 		stabled:         0,
-		entries:         make([]pb.Entry, 0),
+		dummyIndex:      0,
+		entries:         entries,
 		pendingSnapshot: new(pb.Snapshot),
 	}
 }
@@ -78,29 +87,37 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	return l.entries
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	// firstIndex := l.dummyIndex + 1
+	// for i := l.stabled + 1; i <= l.LastIndex(); i++ {
+	// 	entries = append(entries, l.entries[i-firstIndex])
+	// }
+	unstable := make([]pb.Entry, 0)
+	unstable = append(unstable, l.entries[l.stabled+1:]...)
+	return unstable
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	ents = make([]pb.Entry, 0)
+	ents = append(ents, l.entries[l.applied+1:l.committed+1]...)
+	return ents
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	return l.dummyIndex + uint64(len(l.entries)) - 1
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	return l.entries[i].Term, nil
 }
