@@ -194,7 +194,6 @@ func newRaft(c *Config) *Raft {
 	for _, v := range c.peers {
 		r.Prs[v] = &Progress{0, 1}
 	}
-	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{Term: 0, Index: 0, Data: []byte("init")})
 	return r
 }
 
@@ -434,9 +433,20 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 		}
 	}
 	if count > len(r.Prs)/2 {
+		old := r.RaftLog.committed
 		r.RaftLog.committed = max(r.RaftLog.committed, m.Index)
+		if r.RaftLog.committed != old {
+			// The tests assume that once the leader advances its commit index,
+			// it will broadcast the commit index by MessageType_MsgAppend messages.
+			// https://github.com/talent-plan/tinykv/pull/302
+			for id := range r.Prs {
+				if id == r.id {
+					continue
+				}
+				r.sendAppend(id)
+			}
+		}
 	}
-
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -506,6 +516,7 @@ func (r *Raft) Step(m pb.Message) error {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	// msg.index是用来帮助Leader更新follower的pr的
 	msg := &pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From:    r.id,
@@ -526,13 +537,44 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// 	return
 	// }
 
+	// 检查上一条日志是否匹配
+	if m.Index > r.RaftLog.LastIndex() {
+		msg.Reject = true
+		msg.Index = r.RaftLog.LastIndex()
+		r.msgs = append(r.msgs, *msg)
+		return
+	}
+	if m.LogTerm != r.RaftLog.entries[m.Index].Term {
+		msg.Reject = true
+		msg.Index = m.Index - 1
+		r.msgs = append(r.msgs, *msg)
+		return
+	}
+
+	// 检查冲突
+	for i, j := m.Index+1, 0; i <= r.RaftLog.LastIndex() && j < len(m.Entries); i, j = i+1, j+1 {
+		if r.RaftLog.entries[i].Term != m.Entries[j].Term {
+			r.RaftLog.entries = r.RaftLog.entries[:i]
+			// 如果冲突的日志在已提交的日志之前, 则
+			r.RaftLog.stabled = min(r.RaftLog.stabled, i-1)
+			break
+		}
+	}
+
 	// 添加新的entry
-	begin := r.RaftLog.LastIndex() - m.Index + 1
+	begin := r.RaftLog.LastIndex() - m.Index
 	for i := begin; i < uint64(len(m.Entries)); i++ {
 		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
 	}
 	msg.Index = r.RaftLog.LastIndex()
 	r.msgs = append(r.msgs, *msg)
+
+	// 更新commitIndex
+	if m.Commit > r.RaftLog.committed {
+		// log.Println("m.commit", m.Commit, "r.RaftLog.LastIndex()", r.RaftLog.LastIndex())
+		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+	}
+
 }
 
 // handleHeartbeat handle Heartbeat RPC request

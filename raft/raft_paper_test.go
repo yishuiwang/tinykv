@@ -410,12 +410,7 @@ func TestLeaderCommitEntry2AB(t *testing.T) {
 	li := r.RaftLog.LastIndex()
 	r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
 	for _, m := range r.readMessages() {
-		log.Println(m.String())
-		msg := acceptAndReply(m)
-		log.Println(msg.String())
-		r.Step(msg)
-		// r.Step(acceptAndReply(m))
-
+		r.Step(acceptAndReply(m))
 	}
 
 	if g := r.RaftLog.committed; g != li+1 {
@@ -486,10 +481,10 @@ func TestLeaderAcknowledgeCommit2AB(t *testing.T) {
 // Reference: section 5.3
 func TestLeaderCommitPrecedingEntries2AB(t *testing.T) {
 	tests := [][]pb.Entry{
-		// {},
+		{},
 		{{Term: 2, Index: 1}},
-		// {{Term: 1, Index: 1}, {Term: 2, Index: 2}},
-		// {{Term: 1, Index: 1}},
+		{{Term: 1, Index: 1}, {Term: 2, Index: 2}},
+		{{Term: 1, Index: 1}},
 	}
 	for i, tt := range tests {
 		storage := NewMemoryStorage()

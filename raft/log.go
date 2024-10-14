@@ -64,15 +64,25 @@ func newLog(storage Storage) *RaftLog {
 	lastIndex, _ := storage.LastIndex()
 	entries, _ := storage.Entries(firstIndex, lastIndex+1)
 
-	return &RaftLog{
+	r := &RaftLog{
 		storage:         storage,
 		committed:       0,
 		applied:         0,
 		stabled:         0,
 		dummyIndex:      0,
-		entries:         entries,
+		entries:         make([]pb.Entry, 0),
 		pendingSnapshot: new(pb.Snapshot),
 	}
+
+	// 添加一个dummy entry
+	r.entries = append(r.entries, pb.Entry{Index: r.dummyIndex, Term: 0, Data: []byte("init")})
+	r.entries = append(r.entries, entries...)
+	r.committed = lastIndex
+	r.applied = firstIndex - 1
+	r.stabled = lastIndex
+	r.dummyIndex = firstIndex - 1
+
+	return r
 }
 
 // We need to compact the log entries in some point of time like
@@ -87,7 +97,7 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries
+	return l.entries[1:]
 }
 
 // unstableEntries return all the unstable entries
@@ -113,7 +123,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return l.dummyIndex + uint64(len(l.entries)) - 1
+	return l.dummyIndex + uint64(len(l.allEntries()))
 }
 
 // Term return the term of the entry in the given index
