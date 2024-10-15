@@ -320,6 +320,39 @@ func (r *Raft) becomeLeader() {
 	// r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&noop}})
 }
 
+// updateCommit 更新commitIndex
+// reference: https://github.com/RinChanNOWWW/tinykv-impl/blob/master/raft/raft.go#L791
+func (r *Raft) updateCommit() {
+	commitUpdate := false
+	for i := r.RaftLog.committed + 1; i <= r.RaftLog.LastIndex(); i++ {
+		matchCount := 0
+		for _, p := range r.Prs {
+			if p.Match >= i {
+				matchCount++
+			}
+		}
+
+		// leader only commit on it's current term (5.4.2)
+		term, _ := r.RaftLog.Term(i)
+		if matchCount > len(r.Prs)/2 && term == r.Term && r.RaftLog.committed != i {
+			r.RaftLog.committed = i
+			commitUpdate = true
+		}
+	}
+
+	// The tests assume that once the leader advances its commit index,
+	// it will broadcast the commit index by MessageType_MsgAppend messages.
+	// https://github.com/talent-plan/tinykv/pull/302
+	if commitUpdate {
+		for id := range r.Prs {
+			if id == r.id {
+				continue
+			}
+			r.sendAppend(id)
+		}
+	}
+}
+
 // RequestVote 请求所有其他节点投票
 func (r *Raft) RequestVote() {
 	for id := range r.Prs {
@@ -328,11 +361,15 @@ func (r *Raft) RequestVote() {
 		}
 		// 初始化投票记录
 		r.votes[id] = false
+
+		logTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
 		msg := pb.Message{
 			MsgType: pb.MessageType_MsgRequestVote,
 			From:    r.id,
 			To:      id,
 			Term:    r.Term,
+			Index:   r.RaftLog.LastIndex(),
+			LogTerm: logTerm,
 		}
 		r.msgs = append(r.msgs, msg)
 	}
@@ -383,6 +420,18 @@ func (r *Raft) HandleRequestVote(m pb.Message) {
 		r.msgs = append(r.msgs, msg)
 		return
 	}
+	// the voter denies its vote if its own log is more up-to-date than that of the candidate.
+	if m.LogTerm < r.RaftLog.entries[r.RaftLog.LastIndex()].Term {
+		// 如果两个日志的最后条目属于不同的任期，那么拥有较大任期的日志被认为是更新的。
+		r.msgs = append(r.msgs, msg)
+		return
+	}
+	if m.LogTerm == r.RaftLog.entries[r.RaftLog.LastIndex()].Term && m.Index < r.RaftLog.LastIndex() {
+		// 如果两个日志的最后条目属于相同的任期，那么日志更长的那个被认为是更新的。
+		r.msgs = append(r.msgs, msg)
+		return
+	}
+
 	// 2. If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	if r.Vote == None || r.Vote == m.From {
@@ -426,27 +475,7 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 	pr.Next = m.Index + 1
 	r.Prs[m.From] = pr
 
-	count := 0
-	for _, pr := range r.Prs {
-		if pr.Match >= m.Index {
-			count++
-		}
-	}
-	if count > len(r.Prs)/2 {
-		old := r.RaftLog.committed
-		r.RaftLog.committed = max(r.RaftLog.committed, m.Index)
-		if r.RaftLog.committed != old {
-			// The tests assume that once the leader advances its commit index,
-			// it will broadcast the commit index by MessageType_MsgAppend messages.
-			// https://github.com/talent-plan/tinykv/pull/302
-			for id := range r.Prs {
-				if id == r.id {
-					continue
-				}
-				r.sendAppend(id)
-			}
-		}
-	}
+	r.updateCommit()
 }
 
 // Step the entrance of handle message, see `MessageType`

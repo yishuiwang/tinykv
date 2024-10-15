@@ -60,6 +60,8 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
+	hardState, _, _ := storage.InitialState()
+
 	firstIndex, _ := storage.FirstIndex()
 	lastIndex, _ := storage.LastIndex()
 	entries, _ := storage.Entries(firstIndex, lastIndex+1)
@@ -77,7 +79,7 @@ func newLog(storage Storage) *RaftLog {
 	// 添加一个dummy entry
 	r.entries = append(r.entries, pb.Entry{Index: r.dummyIndex, Term: 0, Data: []byte("init")})
 	r.entries = append(r.entries, entries...)
-	r.committed = lastIndex
+	r.committed = hardState.Commit
 	r.applied = firstIndex - 1
 	r.stabled = lastIndex
 	r.dummyIndex = firstIndex - 1
@@ -129,5 +131,5 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return l.entries[i].Term, nil
+	return l.entries[i-l.dummyIndex].Term, nil
 }
