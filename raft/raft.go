@@ -161,6 +161,9 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+
+	voteCount   int
+	rejectCount int
 }
 
 // newRaft return a raft peer with the given config
@@ -169,11 +172,12 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
+	hardState, _, _ := c.Storage.InitialState()
 	r := new(Raft)
 	r.id = c.ID
 	r.RaftLog = newLog(c.Storage)
-	r.Term = 0
-	r.Vote = None
+	r.Term = hardState.Term
+	r.Vote = hardState.Vote
 	r.State = StateFollower
 	r.Prs = make(map[uint64]*Progress)
 	r.votes = make(map[uint64]bool)
@@ -289,6 +293,8 @@ func (r *Raft) becomeCandidate() {
 	r.Vote = r.id
 	r.votes[r.id] = true
 	r.electionElapsed = 0
+	r.voteCount = 1
+	r.rejectCount = 0
 
 	r.electionTimeout = r.baseTimeout + rand.IntN(r.baseTimeout)
 	// Send RequestVote RPCs to all other servers
@@ -450,17 +456,29 @@ func (r *Raft) HandleRequestVote(m pb.Message) {
 
 // HandleVoteResponse 处理投票响应
 func (r *Raft) HandleVoteResponse(m pb.Message) {
-	if !m.Reject {
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+		r.Vote = None
+		return
+	}
+
+	if m.Reject {
+		r.votes[m.From] = false
+		r.rejectCount++
+	} else {
 		r.votes[m.From] = true
+		r.voteCount++
 	}
-	count := 0
-	for _, vote := range r.votes {
-		if vote {
-			count++
-		}
-	}
-	if count > len(r.Prs)/2 && r.State == StateCandidate {
+
+	// 论文中没有规定收到大多数reject时会转为follower，但是为了通过TestLeaderElectionOverwriteNewerLogs2AB
+	// 需要添加rejectCount使candidate转为follower
+	// https://asktug.com/t/topic/273439?replies_to_post_number=6
+	// https://asktug.com/t/topic/694701/2
+	// https://github.com/talent-plan/tinykv/pull/328/files
+	if r.voteCount > len(r.Prs)/2 && r.State == StateCandidate {
 		r.becomeLeader()
+	} else if r.rejectCount > len(r.Prs)/2 && r.State == StateCandidate {
+		r.becomeFollower(r.Term, None)
 	}
 }
 
@@ -496,6 +514,7 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
 		}
+		return nil
 	case StateCandidate:
 		switch m.MsgType {
 		case pb.MessageType_MsgHup:
@@ -513,6 +532,7 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
 		}
+		return nil
 	case StateLeader:
 		switch m.MsgType {
 		case pb.MessageType_MsgPropose:
