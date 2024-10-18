@@ -239,6 +239,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		From:    r.id,
 		To:      to,
 		Term:    r.Term,
+		Commit:  min(r.RaftLog.committed, r.Prs[to].Match),
 	}
 	r.msgs = append(r.msgs, msg)
 }
@@ -430,10 +431,26 @@ func (r *Raft) HandleRequestVote(m pb.Message) {
 	if m.LogTerm < r.RaftLog.entries[r.RaftLog.LastIndex()].Term {
 		// 如果两个日志的最后条目属于不同的任期，那么拥有较大任期的日志被认为是更新的。
 		r.msgs = append(r.msgs, msg)
+		if m.Term > r.Term {
+			// case 1
+			r.becomeFollower(m.Term, None)
+		}
 		return
 	}
 	if m.LogTerm == r.RaftLog.entries[r.RaftLog.LastIndex()].Term && m.Index < r.RaftLog.LastIndex() {
 		// 如果两个日志的最后条目属于相同的任期，那么日志更长的那个被认为是更新的。
+		r.msgs = append(r.msgs, msg)
+		if m.Term > r.Term {
+			// case 2
+			r.becomeFollower(m.Term, None)
+		}
+		return
+	}
+	// 如果m的任期大于r的任期，则r转为follower
+	// 比较谁的日志更新 case 1 和 case 2，决定是否投票给m
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+		msg.Reject = false
 		r.msgs = append(r.msgs, msg)
 		return
 	}
@@ -441,10 +458,6 @@ func (r *Raft) HandleRequestVote(m pb.Message) {
 	// 2. If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	if r.Vote == None || r.Vote == m.From {
-		msg.Reject = false
-	}
-	if m.Term > r.Term {
-		r.becomeFollower(m.Term, m.From)
 		msg.Reject = false
 	}
 	if !msg.Reject {
@@ -555,6 +568,10 @@ func (r *Raft) Step(m pb.Message) error {
 				}
 				r.sendHeartbeat(id)
 			}
+		case pb.MessageType_MsgHeartbeatResponse:
+			if m.Index < r.RaftLog.LastIndex() {
+				r.sendAppend(m.From)
+			}
 		case pb.MessageType_MsgAppendResponse:
 			r.HandleAppendResponse(m)
 		}
@@ -582,10 +599,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.Term = m.Term
 
 	// TODO
-	// if len(m.Entries) == 0 {
-	// 	return
-	// }
+	//if len(m.Entries) == 0 {
+	//	log.Println("entries is empty")
+	//}
 
+	// Reply false if log doesn’t contain an entry at prevLogIndex
+	// whose term matches prevLogTerm (§5.3)
 	// 检查上一条日志是否匹配
 	if m.Index > r.RaftLog.LastIndex() {
 		msg.Reject = true
@@ -600,6 +619,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 
+	// If an existing entry conflicts with a new one (same index
+	// but different terms), delete the existing entry and all that
+	// follow it (§5.3)
 	// 检查冲突
 	for i, j := m.Index+1, 0; i <= r.RaftLog.LastIndex() && j < len(m.Entries); i, j = i+1, j+1 {
 		if r.RaftLog.entries[i].Term != m.Entries[j].Term {
@@ -609,7 +631,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			break
 		}
 	}
-
 	// 添加新的entry
 	begin := r.RaftLog.LastIndex() - m.Index
 	for i := begin; i < uint64(len(m.Entries)); i++ {
@@ -618,10 +639,14 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	msg.Index = r.RaftLog.LastIndex()
 	r.msgs = append(r.msgs, *msg)
 
-	// 更新commitIndex
+	// If leaderCommit > commitIndex,
+	// set commitIndex = min(leaderCommit, index of last new entry)
 	if m.Commit > r.RaftLog.committed {
-		// log.Println("m.commit", m.Commit, "r.RaftLog.LastIndex()", r.RaftLog.LastIndex())
-		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+		lastNewEntry := m.Index
+		if len(m.Entries) > 0 {
+			lastNewEntry = m.Entries[len(m.Entries)-1].Index
+		}
+		r.RaftLog.committed = min(m.Commit, lastNewEntry)
 	}
 
 }
@@ -634,14 +659,16 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		From:    r.id,
 		To:      m.From,
 		Term:    r.Term,
+		Index:   r.RaftLog.LastIndex(),
+		Reject:  false,
 	}
 	if m.Term < r.Term {
 		msg.Reject = true
+		return
 	}
-	if m.Term > r.Term {
-		r.becomeFollower(m.Term, m.From)
-		msg.Reject = false
-		msg.Term = r.Term
+	r.becomeFollower(m.Term, m.From)
+	if m.Commit > r.RaftLog.committed {
+		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
 	}
 	r.msgs = append(r.msgs, msg)
 }
