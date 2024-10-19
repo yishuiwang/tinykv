@@ -210,9 +210,9 @@ func (r *Raft) sendAppend(to uint64) bool {
 	for i := pr.Next; i <= r.RaftLog.LastIndex(); i++ {
 		entry = append(entry, &r.RaftLog.entries[i])
 	}
-	// logTerm代表论文中的prevLogTerm
-	logTerm := r.RaftLog.entries[pr.Match].Term
-	// index代表论文中的prevLogIndex
+	preLogTerm := r.RaftLog.entries[pr.Next-1].Term
+	preLogIndex := pr.Next - 1
+
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		From:    r.id,
@@ -220,13 +220,13 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Term:    r.Term,
 		Commit:  r.RaftLog.committed,
 		Entries: entry,
-		LogTerm: logTerm,
-		Index:   pr.Match,
+		LogTerm: preLogTerm,
+		Index:   preLogIndex,
 	}
-	// 更新leader
 	r.msgs = append(r.msgs, msg)
-	r.Prs[r.id].Match = r.RaftLog.LastIndex()
+	// 更新Leader的Next和Match
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
+	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 
 	return true
 }
@@ -341,7 +341,7 @@ func (r *Raft) updateCommit() {
 
 		// leader only commit on it's current term (5.4.2)
 		term, _ := r.RaftLog.Term(i)
-		if matchCount > len(r.Prs)/2 && term == r.Term && r.RaftLog.committed != i {
+		if matchCount > len(r.Prs)/2 && term == r.Term {
 			r.RaftLog.committed = i
 			commitUpdate = true
 		}
@@ -449,7 +449,10 @@ func (r *Raft) HandleRequestVote(m pb.Message) {
 	// 如果m的任期大于r的任期，则r转为follower
 	// 比较谁的日志更新 case 1 和 case 2，决定是否投票给m
 	if m.Term > r.Term {
-		r.becomeFollower(m.Term, m.From)
+		// Candidate节点不一定会成为Leader，所以只是简单投票给Candidate
+		// https://asktug.com/t/topic/273388?replies_to_post_number=3
+		r.becomeFollower(m.Term, None)
+		r.Vote = m.From
 		msg.Reject = false
 		r.msgs = append(r.msgs, msg)
 		return
@@ -497,14 +500,23 @@ func (r *Raft) HandleVoteResponse(m pb.Message) {
 
 // HandleAppendResponse 处理AppendEntries响应
 func (r *Raft) HandleAppendResponse(m pb.Message) {
-	if m.Reject {
-		// TODO
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		return
 	}
-	// 更新pr, m.Index是follower.RaftLog.LastIndex()
-	pr := r.Prs[m.From]
-	pr.Match = m.Index
-	pr.Next = m.Index + 1
-	r.Prs[m.From] = pr
+
+	if !m.Reject {
+		// 更新pr, m.Index是follower.RaftLog.LastIndex()
+		r.Prs[m.From].Match = m.Index
+		r.Prs[m.From].Next = m.Index + 1
+	} else {
+		// 尝试减少Next
+		if r.Prs[m.From].Next > 0 {
+			r.Prs[m.From].Next--
+			r.sendAppend(m.From)
+			return
+		}
+	}
 
 	r.updateCommit()
 }
@@ -569,14 +581,24 @@ func (r *Raft) Step(m pb.Message) error {
 				r.sendHeartbeat(id)
 			}
 		case pb.MessageType_MsgHeartbeatResponse:
-			if m.Index < r.RaftLog.LastIndex() {
-				r.sendAppend(m.From)
-			}
+			r.HandleHeartbeatResponse(m)
 		case pb.MessageType_MsgAppendResponse:
 			r.HandleAppendResponse(m)
 		}
 	}
 	return nil
+}
+
+// HandleHeartbeatResponse 处理心跳响应
+func (r *Raft) HandleHeartbeatResponse(m pb.Message) {
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		return
+	}
+
+	if m.Index < r.RaftLog.LastIndex() {
+		r.sendAppend(m.From)
+	}
 }
 
 // handleAppendEntries handle AppendEntries RPC request
@@ -596,12 +618,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.msgs = append(r.msgs, *msg)
 		return
 	}
-	r.Term = m.Term
-
-	// TODO
-	//if len(m.Entries) == 0 {
-	//	log.Println("entries is empty")
-	//}
+	// 合法Leader出现，节点必须更新其任期并承认新的 Leader
+	r.becomeFollower(m.Term, m.From)
 
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
