@@ -244,6 +244,15 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	r.msgs = append(r.msgs, msg)
 }
 
+func (r *Raft) broadcast() {
+	for id := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		r.sendAppend(id)
+	}
+}
+
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
@@ -317,12 +326,7 @@ func (r *Raft) becomeLeader() {
 
 	r.RaftLog.entries = append(r.RaftLog.entries, noop)
 
-	for id := range r.Prs {
-		if id == r.id {
-			continue
-		}
-		r.sendAppend(id)
-	}
+	r.broadcast()
 
 	// r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&noop}})
 }
@@ -351,12 +355,7 @@ func (r *Raft) updateCommit() {
 	// it will broadcast the commit index by MessageType_MsgAppend messages.
 	// https://github.com/talent-plan/tinykv/pull/302
 	if commitUpdate {
-		for id := range r.Prs {
-			if id == r.id {
-				continue
-			}
-			r.sendAppend(id)
-		}
+		r.broadcast()
 	}
 }
 
@@ -405,12 +404,7 @@ func (r *Raft) HandleMsgPropose(m pb.Message) {
 		r.RaftLog.committed = r.RaftLog.LastIndex()
 	}
 
-	for id := range r.Prs {
-		if id == r.id {
-			continue
-		}
-		r.sendAppend(id)
-	}
+	r.broadcast()
 }
 
 // HandleRequestVote 处理投票请求
