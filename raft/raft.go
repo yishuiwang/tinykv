@@ -318,6 +318,7 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
 
+	// Leader should propose a noop entry on its term
 	noop := pb.Entry{
 		Term:  r.Term,
 		Index: r.RaftLog.LastIndex() + 1,
@@ -326,7 +327,19 @@ func (r *Raft) becomeLeader() {
 
 	r.RaftLog.entries = append(r.RaftLog.entries, noop)
 
+	// 初始化Prs
+	for id := range r.Prs {
+		if id == r.id {
+			r.Prs[id].Match = r.RaftLog.LastIndex()
+			r.Prs[id].Next = r.RaftLog.LastIndex() + 1
+		} else {
+			r.Prs[id].Match = 0
+			r.Prs[id].Next = r.RaftLog.LastIndex() + 1
+		}
+	}
+
 	r.broadcast()
+	r.updateCommit()
 
 	// r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&noop}})
 }
