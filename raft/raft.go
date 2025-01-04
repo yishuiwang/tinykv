@@ -315,70 +315,83 @@ func (r *Raft) updateCommit() {
 	}
 }
 
+func StepFollower(r *Raft, m pb.Message) error {
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		r.becomeCandidate()
+		r.RequestVote()
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.HandleVoteResponse(m)
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgRequestVote:
+		r.HandleRequestVote(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	}
+	return nil
+}
+
+func StepCandidate(r *Raft, m pb.Message) error {
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		r.becomeCandidate()
+		r.RequestVote()
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.HandleVoteResponse(m)
+	case pb.MessageType_MsgAppend:
+		if m.Term >= r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgRequestVote:
+		r.HandleRequestVote(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	}
+	return nil
+}
+
+func StepLeader(r *Raft, m pb.Message) error {
+	switch m.MsgType {
+	case pb.MessageType_MsgPropose:
+		r.HandleMsgPropose(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.HandleVoteResponse(m)
+	case pb.MessageType_MsgAppend:
+		if m.Term > r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgRequestVote:
+		r.HandleRequestVote(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgBeat:
+		for id := range r.Prs {
+			if id == r.id {
+				continue
+			}
+			r.sendHeartbeat(id)
+		}
+	case pb.MessageType_MsgHeartbeatResponse:
+		r.HandleHeartbeatResponse(m)
+	case pb.MessageType_MsgAppendResponse:
+		r.HandleAppendResponse(m)
+	}
+	return nil
+}
+
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	switch r.State {
 	case StateFollower:
-		switch m.MsgType {
-		case pb.MessageType_MsgHup:
-			r.becomeCandidate()
-			r.RequestVote()
-		case pb.MessageType_MsgRequestVoteResponse:
-			r.HandleVoteResponse(m)
-		case pb.MessageType_MsgAppend:
-			r.handleAppendEntries(m)
-		case pb.MessageType_MsgRequestVote:
-			r.HandleRequestVote(m)
-		case pb.MessageType_MsgHeartbeat:
-			r.handleHeartbeat(m)
-		}
-		return nil
+		return StepFollower(r, m)
 	case StateCandidate:
-		switch m.MsgType {
-		case pb.MessageType_MsgHup:
-			r.becomeCandidate()
-			r.RequestVote()
-		case pb.MessageType_MsgRequestVoteResponse:
-			r.HandleVoteResponse(m)
-		case pb.MessageType_MsgAppend:
-			if m.Term >= r.Term {
-				r.becomeFollower(m.Term, m.From)
-			}
-			r.handleAppendEntries(m)
-		case pb.MessageType_MsgRequestVote:
-			r.HandleRequestVote(m)
-		case pb.MessageType_MsgHeartbeat:
-			r.handleHeartbeat(m)
-		}
-		return nil
+		return StepCandidate(r, m)
 	case StateLeader:
-		switch m.MsgType {
-		case pb.MessageType_MsgPropose:
-			r.HandleMsgPropose(m)
-		case pb.MessageType_MsgRequestVoteResponse:
-			r.HandleVoteResponse(m)
-		case pb.MessageType_MsgAppend:
-			if m.Term > r.Term {
-				r.becomeFollower(m.Term, m.From)
-			}
-			r.handleAppendEntries(m)
-		case pb.MessageType_MsgRequestVote:
-			r.HandleRequestVote(m)
-		case pb.MessageType_MsgHeartbeat:
-			r.handleHeartbeat(m)
-		case pb.MessageType_MsgBeat:
-			for id := range r.Prs {
-				if id == r.id {
-					continue
-				}
-				r.sendHeartbeat(id)
-			}
-		case pb.MessageType_MsgHeartbeatResponse:
-			r.HandleHeartbeatResponse(m)
-		case pb.MessageType_MsgAppendResponse:
-			r.HandleAppendResponse(m)
-		}
+		return StepLeader(r, m)
 	}
 	return nil
 }

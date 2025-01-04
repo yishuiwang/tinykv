@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -71,16 +70,28 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	PreSoftState *SoftState
+	PreHardState pb.HardState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
 	r := newRaft(config)
+	rn := &RawNode{
+		Raft: r,
+		PreHardState: pb.HardState{
+			Term:   r.Term,
+			Vote:   r.Vote,
+			Commit: r.RaftLog.committed,
+		},
+		PreSoftState: &SoftState{
+			Lead:      r.Lead,
+			RaftState: r.State,
+		},
+	}
 
-	return &RawNode{
-		r,
-	}, nil
+	return rn, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -148,26 +159,53 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	softState := &SoftState{
-		rn.Raft.Lead,
-		rn.Raft.State,
+
+	ready := Ready{}
+	ready.Entries = rn.Raft.RaftLog.unstableEntries()
+	ready.CommittedEntries = rn.Raft.RaftLog.nextEnts()
+	HardState := pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
 	}
-	return Ready{
-		SoftState: softState,
-		HardState: pb.HardState{
-			Term:   rn.Raft.Term,
-			Vote:   rn.Raft.Vote,
-			Commit: rn.Raft.RaftLog.committed,
-		},
-		Entries:          rn.Raft.RaftLog.unstableEntries(),
-		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
-		Messages:         rn.Raft.msgs,
+	SoftState := SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
 	}
+	if !CompareHardState(HardState, rn.PreHardState) {
+		ready.HardState = HardState
+	}
+	if !CompareSoftState(SoftState, *rn.PreSoftState) {
+		ready.SoftState = &SoftState
+	}
+	if len(rn.Raft.msgs) > 0 {
+		ready.Messages = rn.Raft.msgs
+	}
+
+	return ready
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	HardState := pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
+	}
+	SoftState := SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
+	}
+
+	if !CompareHardState(HardState, rn.PreHardState) {
+		return true
+	}
+
+	if !CompareSoftState(SoftState, *rn.PreSoftState) {
+		return true
+	}
+
 	return false
 }
 
@@ -178,10 +216,15 @@ func (rn *RawNode) Advance(rd Ready) {
 	rn.Raft.RaftLog.applied = rd.HardState.Commit
 	rn.Raft.RaftLog.stabled = rd.HardState.Commit
 
-	log.Println("RawNode.Advance")
-	log.Println("applied:", rn.Raft.RaftLog.applied)
-	log.Println("stabled:", rn.Raft.RaftLog.stabled)
-	log.Println("committed:", rd.HardState.Commit)
+	rn.PreHardState = pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
+	}
+	rn.PreSoftState = &SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
+	}
 
 }
 
@@ -200,4 +243,18 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+}
+
+func CompareHardState(h1, h2 pb.HardState) bool {
+	if h1.Term != h2.Term || h1.Commit != h2.Commit || h1.Vote != h2.Vote {
+		return false
+	}
+	return true
+}
+
+func CompareSoftState(s1, s2 SoftState) bool {
+	if s1.Lead != s2.Lead || s1.RaftState != s2.RaftState {
+		return false
+	}
+	return true
 }
