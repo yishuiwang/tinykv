@@ -2,19 +2,33 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"github.com/pingcap-incubator/tinykv/log"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	pr := r.Prs[to]
-	entry := make([]*pb.Entry, 0)
-	for i := pr.Next; i <= r.RaftLog.LastIndex(); i++ {
-		entry = append(entry, &r.RaftLog.entries[i])
-	}
-	preLogTerm := r.RaftLog.entries[pr.Next-1].Term
 	preLogIndex := pr.Next - 1
+	preLogTerm, err := r.RaftLog.Term(preLogIndex)
+	if err != nil {
+		log.Error(err, preLogIndex)
+		return false
+	}
+	lastIndex := r.RaftLog.LastIndex()
+	if lastIndex < pr.Next {
+		log.Warn("no new entries to send")
+		return false
+	}
+
+	entries, _ := r.RaftLog.Entries(pr.Next, lastIndex+1)
+	entry := make([]*pb.Entry, 0)
+	for _, e := range entries {
+		entry = append(entry, &e)
+	}
 
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -27,6 +41,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Index:   preLogIndex,
 	}
 	r.msgs = append(r.msgs, msg)
+	log.Warn("send entries:", msg.Entries)
 
 	return true
 }
@@ -51,4 +66,27 @@ func (r *Raft) broadcast() {
 		}
 		r.sendAppend(id)
 	}
+}
+
+func (r *Raft) sendRequestVoteResponse(to uint64, reject bool) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgRequestVoteResponse,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		Reject:  reject,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) sendAppendResponse(to uint64, reject bool) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		Reject:  reject,
+		Index:   r.RaftLog.LastIndex(),
+	}
+	r.msgs = append(r.msgs, msg)
 }

@@ -16,6 +16,7 @@ package raft
 
 import (
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"github.com/pkg/errors"
 )
 
 // RaftLog manage the log entries, its struct look like:
@@ -105,34 +106,65 @@ func (l *RaftLog) allEntries() []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	// firstIndex := l.dummyIndex + 1
-	// for i := l.stabled + 1; i <= l.LastIndex(); i++ {
-	// 	entries = append(entries, l.entries[i-firstIndex])
-	// }
+	begin := l.stabled + 1 - l.dummyIndex
 	unstable := make([]pb.Entry, 0)
-	unstable = append(unstable, l.entries[l.stabled+1:]...)
+	unstable = append(unstable, l.entries[begin:]...)
 	return unstable
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+	begin := l.applied + 1 - l.dummyIndex
+	end := l.committed + 1 - l.dummyIndex
 	ents = make([]pb.Entry, 0)
-	ents = append(ents, l.entries[l.applied+1:l.committed+1]...)
+	ents = append(ents, l.entries[begin:end]...)
 	return ents
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-
-	unstable := len(l.unstableEntries())
-
-	return l.stabled + uint64(unstable) + l.dummyIndex
+	if len(l.entries) == 0 {
+		index, _ := l.storage.LastIndex()
+		return index
+	}
+	return l.entries[len(l.entries)-1].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return l.entries[i-l.dummyIndex].Term, nil
+	firstIndex := l.dummyIndex + 1
+	lastIndex := l.LastIndex()
+	if len(l.entries) > 0 && i >= firstIndex && i <= lastIndex {
+		return l.entries[i-l.dummyIndex].Term, nil
+	}
+	term, err := l.storage.Term(i)
+	if err == nil {
+		return term, nil
+	}
+	return 0, err
+}
+
+// 返回的是 [left, right) 的entries
+func (l *RaftLog) Entries(left, right uint64) ([]pb.Entry, error) {
+	if left > right {
+		return nil, errors.New("invalid range")
+	}
+	firstIndex := l.dummyIndex + 1
+	lastIndex := l.LastIndex()
+
+	if left >= firstIndex && right <= lastIndex+1 {
+		return l.entries[left-l.dummyIndex : right-l.dummyIndex], nil
+	}
+	return l.storage.Entries(left, right)
+}
+
+func (l *RaftLog) RemoveEntriesAfter(index uint64) {
+	if index < l.dummyIndex {
+		return
+	}
+	l.entries = l.entries[:index+1-l.dummyIndex]
+	l.stabled = index
 }

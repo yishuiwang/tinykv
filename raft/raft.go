@@ -18,6 +18,7 @@ import (
 	"errors"
 	"math/rand/v2"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -171,7 +172,10 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	hardState, _, _ := c.Storage.InitialState()
+	hardState, confState, err := c.Storage.InitialState()
+	if err != nil {
+		panic(err)
+	}
 	r := new(Raft)
 	r.id = c.ID
 	r.RaftLog = newLog(c.Storage)
@@ -180,9 +184,15 @@ func newRaft(c *Config) *Raft {
 	r.State = StateFollower
 	r.Prs = make(map[uint64]*Progress)
 	r.votes = make(map[uint64]bool)
+	if c.peers == nil {
+		c.peers = confState.Nodes
+	}
+	lastIndex := r.RaftLog.LastIndex()
+	r.Prs[r.id] = &Progress{lastIndex, lastIndex + 1}
 	for _, id := range c.peers {
-		r.Prs[id] = &Progress{0, 1}
-		r.votes[id] = false
+		if id != r.id {
+			r.Prs[id] = &Progress{0, lastIndex + 1}
+		}
 	}
 	r.msgs = make([]pb.Message, 0)
 	r.Lead = None
@@ -252,6 +262,7 @@ func (r *Raft) becomeCandidate() {
 
 	r.electionTimeout = r.baseTimeout + rand.IntN(r.baseTimeout)
 	// Send RequestVote RPCs to all other servers
+
 }
 
 // becomeLeader transform this peer's state to leader
@@ -291,9 +302,11 @@ func (r *Raft) becomeLeader() {
 // reference: https://github.com/RinChanNOWWW/tinykv-impl/blob/master/raft/raft.go#L791
 func (r *Raft) updateCommit() {
 	commitUpdate := false
+	log.Info("update commit")
 	for i := r.RaftLog.committed + 1; i <= r.RaftLog.LastIndex(); i++ {
 		matchCount := 0
 		for _, p := range r.Prs {
+			log.Info("matchCount", matchCount, "i", i, "p.Match", p.Match)
 			if p.Match >= i {
 				matchCount++
 			}
@@ -301,6 +314,7 @@ func (r *Raft) updateCommit() {
 
 		// leader only commit on it's current term (5.4.2)
 		term, _ := r.RaftLog.Term(i)
+		log.Info("term", term, "r.Term", r.Term)
 		if matchCount > len(r.Prs)/2 && term == r.Term {
 			r.RaftLog.committed = i
 			commitUpdate = true

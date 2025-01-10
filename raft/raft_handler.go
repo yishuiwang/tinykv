@@ -3,8 +3,7 @@
 package raft
 
 import (
-	"log"
-
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -36,59 +35,40 @@ func (r *Raft) RequestVote() {
 
 // HandleRequestVote 处理投票请求
 func (r *Raft) HandleRequestVote(m pb.Message) {
-	msg := pb.Message{
-		MsgType: pb.MessageType_MsgRequestVoteResponse,
-		From:    r.id,
-		To:      m.From,
-		Term:    r.Term,
-		Reject:  true,
-	}
 	// 1. Reply false if term < currentTerm (§5.1)
 	if m.Term < r.Term {
-		r.msgs = append(r.msgs, msg)
+		log.Warn("Reject vote request from", m.From, "because of term")
+		r.sendRequestVoteResponse(m.From, true)
 		return
 	}
-	// the voter denies its vote if its own log is more up-to-date than that of the candidate.
-	if m.LogTerm < r.RaftLog.entries[r.RaftLog.LastIndex()].Term {
-		// 如果两个日志的最后条目属于不同的任期，那么拥有较大任期的日志被认为是更新的。
-		r.msgs = append(r.msgs, msg)
-		if m.Term > r.Term {
-			// case 1
-			r.becomeFollower(m.Term, None)
-		}
-		return
-	}
-	if m.LogTerm == r.RaftLog.entries[r.RaftLog.LastIndex()].Term && m.Index < r.RaftLog.LastIndex() {
-		// 如果两个日志的最后条目属于相同的任期，那么日志更长的那个被认为是更新的。
-		r.msgs = append(r.msgs, msg)
-		if m.Term > r.Term {
-			// case 2
-			r.becomeFollower(m.Term, None)
-		}
-		return
-	}
-	// 如果m的任期大于r的任期，则r转为follower
-	// 比较谁的日志更新 case 1 和 case 2，决定是否投票给m
+
+	// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
 	if m.Term > r.Term {
 		// Candidate节点不一定会成为Leader，所以只是简单投票给Candidate
 		// https://asktug.com/t/topic/273388?replies_to_post_number=3
 		r.becomeFollower(m.Term, None)
 		r.Vote = m.From
-		msg.Reject = false
-		r.msgs = append(r.msgs, msg)
-		return
 	}
 
 	// 2. If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	if r.Vote == None || r.Vote == m.From {
-		msg.Reject = false
+		// the voter denies its vote if its own log is more up-to-date than that of the candidate.
+		if r.moreUp2Date(m.LogTerm, m.Index) {
+			log.Warn(r.id, "Reject vote request from", m.From, "because of log")
+			r.sendRequestVoteResponse(m.From, true)
+			return
+		} else {
+			r.Vote = m.From
+			r.votes[m.From] = true
+			r.sendRequestVoteResponse(m.From, false)
+			log.Warnf("r %d vote for %d", r.id, m.From)
+			return
+		}
+	} else {
+		r.sendRequestVoteResponse(m.From, true)
+		return
 	}
-	if !msg.Reject {
-		r.Vote = m.From
-		r.votes[m.From] = true
-	}
-	r.msgs = append(r.msgs, msg)
 }
 
 // HandleVoteResponse 处理投票响应
@@ -123,7 +103,7 @@ func (r *Raft) HandleVoteResponse(m pb.Message) {
 func (r *Raft) HandleMsgPropose(m pb.Message) {
 	if len(m.Entries) == 0 {
 		// TODO:处理空消息
-		log.Println("entries is empty")
+		//log.Println("entries is empty")
 	}
 
 	for _, entry := range m.Entries {
@@ -160,6 +140,13 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		msg.Reject = true
 		return
 	}
+	// Reply false if log doesn’t contain an entry at prevLogIndex
+	// whose term matches prevLogTerm (§5.3)
+	term, err := r.RaftLog.Term(m.Index)
+	if err != nil || term != m.LogTerm {
+		msg.Reject = true
+		return
+	}
 	r.becomeFollower(m.Term, m.From)
 	if m.Commit > r.RaftLog.committed {
 		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
@@ -183,17 +170,11 @@ func (r *Raft) HandleHeartbeatResponse(m pb.Message) {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// msg.index是用来帮助Leader更新follower的pr的
-	msg := &pb.Message{
-		MsgType: pb.MessageType_MsgAppendResponse,
-		From:    r.id,
-		To:      m.From,
-		Term:    m.Term,
-		Reject:  false,
-	}
+	log.Infof("r%d receive entries: %v", r.id, m.Entries)
+	log.Info("r", r.id, "before ", r.RaftLog.entries)
 	if r.Term > m.Term {
-		msg.Reject = true
-		msg.Term = r.Term
-		r.msgs = append(r.msgs, *msg)
+		log.Warn("Reject append request from", m.From, "because of term")
+		r.sendAppendResponse(m.From, true)
 		return
 	}
 	// 合法Leader出现，节点必须更新其任期并承认新的 Leader
@@ -201,17 +182,21 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
-	// 检查上一条日志是否匹配
+	// m.Index 相当于 prevLogIndex ，检查上一条日志是否匹配
 	if m.Index > r.RaftLog.LastIndex() {
-		msg.Reject = true
-		msg.Index = r.RaftLog.LastIndex()
-		r.msgs = append(r.msgs, *msg)
+		log.Warn("Reject append request from", m.From, "because of index")
+		r.sendAppendResponse(m.From, true)
 		return
 	}
-	if m.LogTerm != r.RaftLog.entries[m.Index].Term {
-		msg.Reject = true
-		msg.Index = m.Index - 1
-		r.msgs = append(r.msgs, *msg)
+	preLogTerm, err := r.RaftLog.Term(m.Index)
+	if err != nil {
+		log.Error("error", err)
+		r.sendAppendResponse(m.From, true)
+		return
+	}
+	if m.LogTerm != preLogTerm {
+		log.Warn("Reject append request from", m.From, "because of term")
+		r.sendAppendResponse(m.From, true)
 		return
 	}
 
@@ -220,8 +205,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// follow it (§5.3)
 	// 检查冲突
 	for i, j := m.Index+1, 0; i <= r.RaftLog.LastIndex() && j < len(m.Entries); i, j = i+1, j+1 {
-		if r.RaftLog.entries[i].Term != m.Entries[j].Term {
-			r.RaftLog.entries = r.RaftLog.entries[:i]
+		term, _ := r.RaftLog.Term(i)
+		if term != m.Entries[j].Term {
+			r.RaftLog.RemoveEntriesAfter(i - 1)
 			// 如果冲突的日志在已提交的日志之前, 则
 			r.RaftLog.stabled = min(r.RaftLog.stabled, i-1)
 			break
@@ -232,8 +218,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	for i := begin; i < uint64(len(m.Entries)); i++ {
 		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
 	}
-	msg.Index = r.RaftLog.LastIndex()
-	r.msgs = append(r.msgs, *msg)
 
 	// If leaderCommit > commitIndex,
 	// set commitIndex = min(leaderCommit, index of last new entry)
@@ -244,10 +228,14 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 		r.RaftLog.committed = min(m.Commit, lastNewEntry)
 	}
+	log.Info("r", r.id, "after ", r.RaftLog.entries)
+	r.sendAppendResponse(m.From, false)
 }
 
 // HandleAppendResponse 处理AppendEntries响应
 func (r *Raft) HandleAppendResponse(m pb.Message) {
+	log.Infof("r%d receive append response from %d", r.id, m.From)
+	log.Info("message", m.String(), m.Reject)
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, None)
 		return
@@ -267,4 +255,20 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 	}
 
 	r.updateCommit()
+	log.Info("r", r.id, "commit", r.RaftLog.committed)
+}
+
+// 比较谁的日志更新
+func (r *Raft) moreUp2Date(term uint64, index uint64) bool {
+	lastTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
+
+	// 如果两个日志的最后条目属于不同的任期，那么拥有较大任期的日志被认为是更新的。
+	if term > lastTerm {
+		return false
+	}
+	// 如果两个日志的最后条目属于相同的任期，那么日志更长的那个被认为是更新的。
+	if term == lastTerm && index >= r.RaftLog.LastIndex() {
+		return false
+	}
+	return true
 }
