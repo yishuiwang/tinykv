@@ -20,8 +20,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	lastIndex := r.RaftLog.LastIndex()
 	if lastIndex < pr.Next {
-		log.Warn("no new entries to send")
-		return false
+		log.Warn("no new entries to send", "lastIndex", lastIndex, "pr.Next", pr.Next)
+		// return false
 	}
 
 	entries, _ := r.RaftLog.Entries(pr.Next, lastIndex+1)
@@ -41,7 +41,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Index:   preLogIndex,
 	}
 	r.msgs = append(r.msgs, msg)
-	log.Warn("send entries:", msg.Entries)
+	log.Warn("send entries:", msg)
 
 	return true
 }

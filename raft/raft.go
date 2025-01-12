@@ -302,7 +302,6 @@ func (r *Raft) becomeLeader() {
 // reference: https://github.com/RinChanNOWWW/tinykv-impl/blob/master/raft/raft.go#L791
 func (r *Raft) updateCommit() {
 	commitUpdate := false
-	log.Info("update commit")
 	for i := r.RaftLog.committed + 1; i <= r.RaftLog.LastIndex(); i++ {
 		matchCount := 0
 		for _, p := range r.Prs {
@@ -325,6 +324,7 @@ func (r *Raft) updateCommit() {
 	// it will broadcast the commit index by MessageType_MsgAppend messages.
 	// https://github.com/talent-plan/tinykv/pull/302
 	if commitUpdate {
+		log.Info("commitUpdate", r.RaftLog.committed)
 		r.broadcast()
 	}
 }
