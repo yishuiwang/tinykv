@@ -180,6 +180,8 @@ func (rn *RawNode) Ready() Ready {
 	}
 	if len(rn.Raft.msgs) > 0 {
 		ready.Messages = rn.Raft.msgs
+		// 清空已发送的消息
+		rn.Raft.msgs = make([]pb.Message, 0)
 	}
 
 	return ready

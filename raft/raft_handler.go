@@ -92,9 +92,11 @@ func (r *Raft) HandleVoteResponse(m pb.Message) {
 	// https://asktug.com/t/topic/273439?replies_to_post_number=6
 	// https://asktug.com/t/topic/694701/2
 	// https://github.com/talent-plan/tinykv/pull/328/files
-	if r.voteCount > len(r.Prs)/2 && r.State == StateCandidate {
+	if r.voteCount > len(r.Prs)/2 {
+		log.Warn("r", r.id, "state", r.State, "become leader")
 		r.becomeLeader()
-	} else if r.rejectCount > len(r.Prs)/2 && r.State == StateCandidate {
+	} else if r.rejectCount > len(r.Prs)/2 {
+		log.Warn("r", r.id, "state", r.State, "become follower")
 		r.becomeFollower(r.Term, None)
 	}
 }

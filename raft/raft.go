@@ -245,6 +245,8 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Term = term
 	r.Lead = lead
 	r.Vote = None
+	r.voteCount = 0
+	r.rejectCount = 0
 
 	r.electionElapsed = 0
 }
@@ -334,8 +336,6 @@ func StepFollower(r *Raft, m pb.Message) error {
 	case pb.MessageType_MsgHup:
 		r.becomeCandidate()
 		r.RequestVote()
-	case pb.MessageType_MsgRequestVoteResponse:
-		r.HandleVoteResponse(m)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
@@ -370,8 +370,6 @@ func StepLeader(r *Raft, m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgPropose:
 		r.HandleMsgPropose(m)
-	case pb.MessageType_MsgRequestVoteResponse:
-		r.HandleVoteResponse(m)
 	case pb.MessageType_MsgAppend:
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, m.From)
