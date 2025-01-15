@@ -197,13 +197,15 @@ func newRaft(c *Config) *Raft {
 	r.msgs = make([]pb.Message, 0)
 	r.Lead = None
 	r.heartbeatTimeout = c.HeartbeatTick
-	r.electionTimeout = c.ElectionTick
 	r.baseTimeout = c.ElectionTick
+	// 防止多个peer同时竞选
+	r.electionTimeout = r.baseTimeout + rand.IntN(r.baseTimeout)
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
 	r.leadTransferee = None
 	r.PendingConfIndex = 0
 
+	log.Info("newRaft", "id", r.id, "term", r.Term, "vote", r.Vote, "state", r.State, "peers", r.Prs)
 	return r
 }
 
@@ -271,6 +273,7 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	log.Error("node", r.id, "term", r.Term, "becomeLeader")
 	r.State = StateLeader
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
@@ -307,7 +310,6 @@ func (r *Raft) updateCommit() {
 	for i := r.RaftLog.committed + 1; i <= r.RaftLog.LastIndex(); i++ {
 		matchCount := 0
 		for _, p := range r.Prs {
-			log.Info("matchCount", matchCount, "i", i, "p.Match", p.Match)
 			if p.Match >= i {
 				matchCount++
 			}
@@ -315,7 +317,6 @@ func (r *Raft) updateCommit() {
 
 		// leader only commit on it's current term (5.4.2)
 		term, _ := r.RaftLog.Term(i)
-		log.Info("term", term, "r.Term", r.Term)
 		if matchCount > len(r.Prs)/2 && term == r.Term {
 			r.RaftLog.committed = i
 			commitUpdate = true
@@ -326,7 +327,7 @@ func (r *Raft) updateCommit() {
 	// it will broadcast the commit index by MessageType_MsgAppend messages.
 	// https://github.com/talent-plan/tinykv/pull/302
 	if commitUpdate {
-		log.Info("commitUpdate", r.RaftLog.committed)
+		log.Info("updateCommit", "id", r.id, "term", r.Term, "commit", r.RaftLog.committed)
 		r.broadcast()
 	}
 }
@@ -369,6 +370,7 @@ func StepCandidate(r *Raft, m pb.Message) error {
 func StepLeader(r *Raft, m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgPropose:
+		log.Info("StepLeader", "MsgPropose", m.String())
 		r.HandleMsgPropose(m)
 	case pb.MessageType_MsgAppend:
 		if m.Term > r.Term {

@@ -77,13 +77,14 @@ func newLog(storage Storage) *RaftLog {
 		pendingSnapshot: new(pb.Snapshot),
 	}
 
-	// 添加一个dummy entry
-	r.entries = append(r.entries, pb.Entry{Index: r.dummyIndex, Term: 0, Data: []byte("init")})
-	r.entries = append(r.entries, entries...)
 	r.committed = hardState.Commit
 	r.applied = firstIndex - 1
 	r.stabled = lastIndex
 	r.dummyIndex = firstIndex - 1
+
+	// 添加一个dummy entry
+	r.entries = append(r.entries, pb.Entry{Index: r.dummyIndex, Term: 0, Data: []byte("init")})
+	r.entries = append(r.entries, entries...)
 
 	return r
 }

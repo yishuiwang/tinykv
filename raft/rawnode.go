@@ -159,7 +159,6 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-
 	ready := Ready{}
 	ready.Entries = rn.Raft.RaftLog.unstableEntries()
 	ready.CommittedEntries = rn.Raft.RaftLog.nextEnts()
@@ -180,10 +179,10 @@ func (rn *RawNode) Ready() Ready {
 	}
 	if len(rn.Raft.msgs) > 0 {
 		ready.Messages = rn.Raft.msgs
-		// 清空已发送的消息
-		rn.Raft.msgs = make([]pb.Message, 0)
 	}
 
+	// 清空已发送的消息
+	rn.Raft.msgs = make([]pb.Message, 0)
 	return ready
 }
 
@@ -215,18 +214,16 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
-	rn.Raft.RaftLog.applied = rd.HardState.Commit
-	rn.Raft.RaftLog.stabled = rd.HardState.Commit
+	if len(rd.Entries) > 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+	}
+	if len(rd.CommittedEntries) > 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
 
-	rn.PreHardState = pb.HardState{
-		Term:   rn.Raft.Term,
-		Vote:   rn.Raft.Vote,
-		Commit: rn.Raft.RaftLog.committed,
-	}
-	rn.PreSoftState = &SoftState{
-		Lead:      rn.Raft.Lead,
-		RaftState: rn.Raft.State,
-	}
+	rn.PreHardState = rd.HardState
+	// 清空已发送的消息
+	// rn.Raft.msgs = make([]pb.Message, 0)
 
 }
 
