@@ -222,8 +222,6 @@ func (rn *RawNode) Advance(rd Ready) {
 	}
 
 	rn.PreHardState = rd.HardState
-	// 清空已发送的消息
-	// rn.Raft.msgs = make([]pb.Message, 0)
 
 }
 

@@ -37,7 +37,7 @@ func (r *Raft) RequestVote() {
 func (r *Raft) HandleRequestVote(m pb.Message) {
 	// 1. Reply false if term < currentTerm (§5.1)
 	if m.Term < r.Term {
-		log.Warn("Reject vote request from", m.From, "because of term")
+		log.Warnf("r%d term %d > m.term %d reject from %d", r.id, r.Term, m.Term, m.From)
 		r.sendRequestVoteResponse(m.From, true)
 		return
 	}
@@ -62,7 +62,6 @@ func (r *Raft) HandleRequestVote(m pb.Message) {
 			r.Vote = m.From
 			r.votes[m.From] = true
 			r.sendRequestVoteResponse(m.From, false)
-			log.Warnf("r %d vote for %d", r.id, m.From)
 			return
 		}
 	} else {
@@ -93,10 +92,8 @@ func (r *Raft) HandleVoteResponse(m pb.Message) {
 	// https://asktug.com/t/topic/694701/2
 	// https://github.com/talent-plan/tinykv/pull/328/files
 	if r.voteCount > len(r.Prs)/2 {
-		log.Warn("r", r.id, "state", r.State, "become leader")
 		r.becomeLeader()
 	} else if r.rejectCount > len(r.Prs)/2 {
-		log.Warn("r", r.id, "state", r.State, "become follower")
 		r.becomeFollower(r.Term, None)
 	}
 }
@@ -130,30 +127,22 @@ func (r *Raft) HandleMsgPropose(m pb.Message) {
 // handleHeartbeat 处理心跳
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	msg := pb.Message{
-		MsgType: pb.MessageType_MsgHeartbeatResponse,
-		From:    r.id,
-		To:      m.From,
-		Term:    r.Term,
-		Index:   r.RaftLog.LastIndex(),
-		Reject:  false,
-	}
 	if m.Term < r.Term {
-		msg.Reject = true
+		r.sendHeartbeatResponse(m.From, true)
 		return
 	}
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
 	term, err := r.RaftLog.Term(m.Index)
 	if err != nil || term != m.LogTerm {
-		msg.Reject = true
+		r.sendHeartbeatResponse(m.From, true)
 		return
 	}
 	r.becomeFollower(m.Term, m.From)
 	if m.Commit > r.RaftLog.committed {
 		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
 	}
-	r.msgs = append(r.msgs, msg)
+	r.sendHeartbeatResponse(m.From, false)
 }
 
 // HandleHeartbeatResponse 处理心跳响应
@@ -172,10 +161,7 @@ func (r *Raft) HandleHeartbeatResponse(m pb.Message) {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// msg.index是用来帮助Leader更新follower的pr的
-	log.Infof("r%d receive entries: %v", r.id, m.Entries)
-	log.Info("r", r.id, "before ", r.RaftLog.entries)
 	if r.Term > m.Term {
-		log.Warn("Reject append request from", m.From, "because of term")
 		r.sendAppendResponse(m.From, true)
 		return
 	}
@@ -192,12 +178,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 	preLogTerm, err := r.RaftLog.Term(m.Index)
 	if err != nil {
-		log.Error("error", err)
 		r.sendAppendResponse(m.From, true)
 		return
 	}
 	if m.LogTerm != preLogTerm {
-		log.Warn("Reject append request from", m.From, "because of term")
 		r.sendAppendResponse(m.From, true)
 		return
 	}
@@ -230,14 +214,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 		r.RaftLog.committed = min(m.Commit, lastNewEntry)
 	}
-	log.Info("r", r.id, "after ", r.RaftLog.entries)
 	r.sendAppendResponse(m.From, false)
 }
 
 // HandleAppendResponse 处理AppendEntries响应
 func (r *Raft) HandleAppendResponse(m pb.Message) {
-	log.Infof("r%d receive append response from %d", r.id, m.From)
-	log.Info("message", m.String(), m.Reject)
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, None)
 		return
@@ -257,7 +238,6 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 	}
 
 	r.updateCommit()
-	log.Info("r", r.id, "commit", r.RaftLog.committed)
 }
 
 // 比较谁的日志更新

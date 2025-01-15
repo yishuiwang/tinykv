@@ -3,7 +3,6 @@
 package raft
 
 import (
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -15,12 +14,11 @@ func (r *Raft) sendAppend(to uint64) bool {
 	preLogIndex := pr.Next - 1
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
-		log.Error(err, preLogIndex)
 		return false
 	}
 	lastIndex := r.RaftLog.LastIndex()
 	if lastIndex < pr.Next {
-		log.Warn("no new entries to send", "lastIndex", lastIndex, "pr.Next", pr.Next)
+		// log.Warn("no new entries to send", "lastIndex", lastIndex, "pr.Next", pr.Next)
 		// return false
 	}
 
@@ -41,7 +39,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Index:   preLogIndex,
 	}
 	r.msgs = append(r.msgs, msg)
-	log.Warn("send entries:", msg)
 
 	return true
 }
@@ -55,6 +52,17 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		To:      to,
 		Term:    r.Term,
 		Commit:  min(r.RaftLog.committed, r.Prs[to].Match),
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) sendHeartbeatResponse(to uint64, reject bool) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		Reject:  reject,
 	}
 	r.msgs = append(r.msgs, msg)
 }
