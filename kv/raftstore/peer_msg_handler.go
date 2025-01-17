@@ -51,8 +51,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		d.peerStorage.SaveReadyState(&rd)
 		d.Send(d.ctx.trans, rd.Messages)
 		if len(rd.CommittedEntries) > 0 {
-			wb := &engine_util.WriteBatch{}
 			for _, entry := range rd.CommittedEntries {
+				wb := &engine_util.WriteBatch{}
 				d.process(&entry)
 				wb.SetMeta(meta.RaftLogKey(d.regionId, entry.Index), &entry)
 				// 应用到状态机
@@ -60,12 +60,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 				wb.WriteToDB(d.peerStorage.Engines.Kv)
 			}
-
 		}
-
 		d.RaftGroup.Advance(rd)
 	}
 }
+
 func (d *peerMsgHandler) process(entry *eraftpb.Entry) {
 	switch entry.EntryType {
 	case eraftpb.EntryType_EntryNormal:
@@ -93,7 +92,7 @@ func (d *peerMsgHandler) execRaftLog(entry *eraftpb.Entry) {
 		case raft_cmdpb.CmdType_Delete:
 			d.execDelete(entry, req, wb)
 		case raft_cmdpb.CmdType_Snap:
-			d.execSnap(entry)
+			d.execSnap(entry, wb)
 		}
 	}
 }
@@ -157,8 +156,7 @@ func (d *peerMsgHandler) execPut(entry *eraftpb.Entry, req *raft_cmdpb.Request, 
 	}
 }
 
-func (d *peerMsgHandler) execSnap(entry *eraftpb.Entry) {
-	wb := &engine_util.WriteBatch{}
+func (d *peerMsgHandler) execSnap(entry *eraftpb.Entry, wb *engine_util.WriteBatch) {
 	d.peerStorage.applyState.AppliedIndex = entry.Index
 	wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 	wb.WriteToDB(d.ctx.engine.Kv)

@@ -78,6 +78,7 @@ func NewPeerStorage(engines *engine_util.Engines, region *metapb.Region, regionS
 func (ps *PeerStorage) InitialState() (eraftpb.HardState, eraftpb.ConfState, error) {
 	raftState := ps.raftState
 	if raft.IsEmptyHardState(*raftState.HardState) {
+		log.Warn("ps.isInitialized(),", ps.isInitialized())
 		y.AssertTruef(!ps.isInitialized(),
 			"peer for region %s is initialized but local state %+v has empty hard state",
 			ps.region, ps.raftState)
@@ -347,7 +348,9 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWB := new(engine_util.WriteBatch)
 	ps.Append(ready.Entries, raftWB)
 
-	ps.raftState.HardState = &ready.HardState
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
+	}
 
 	raftWB.SetMeta(meta.RaftStateKey(ps.region.GetId()), ps.raftState)
 	raftWB.WriteToDB(ps.Engines.Raft)
