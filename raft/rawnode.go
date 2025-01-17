@@ -70,8 +70,8 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
-	PreSoftState *SoftState
-	PreHardState pb.HardState
+	PreSoftState *SoftState   //update when ready
+	PreHardState pb.HardState //update when advance
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
@@ -80,16 +80,9 @@ func NewRawNode(config *Config) (*RawNode, error) {
 	r := newRaft(config)
 	rn := &RawNode{
 		Raft: r,
-		PreHardState: pb.HardState{
-			Term:   r.Term,
-			Vote:   r.Vote,
-			Commit: r.RaftLog.committed,
-		},
-		PreSoftState: &SoftState{
-			Lead:      r.Lead,
-			RaftState: r.State,
-		},
 	}
+	rn.PreSoftState = rn.SoftState()
+	rn.PreHardState = rn.HardState()
 
 	return rn, nil
 }
@@ -156,26 +149,34 @@ func (rn *RawNode) Step(m pb.Message) error {
 	return ErrStepPeerNotFound
 }
 
+func (rn *RawNode) HardState() pb.HardState {
+	return pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
+	}
+}
+
+func (rn *RawNode) SoftState() *SoftState {
+	return &SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
+	}
+}
+
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 	ready := Ready{}
 	ready.Entries = rn.Raft.RaftLog.unstableEntries()
 	ready.CommittedEntries = rn.Raft.RaftLog.nextEnts()
-	HardState := pb.HardState{
-		Term:   rn.Raft.Term,
-		Vote:   rn.Raft.Vote,
-		Commit: rn.Raft.RaftLog.committed,
+
+	if !CompareSoftState(*rn.SoftState(), *rn.PreSoftState) {
+		ready.SoftState = rn.SoftState()
+		rn.PreSoftState = rn.SoftState()
 	}
-	SoftState := SoftState{
-		Lead:      rn.Raft.Lead,
-		RaftState: rn.Raft.State,
-	}
-	if !CompareHardState(HardState, rn.PreHardState) {
-		ready.HardState = HardState
-	}
-	if !CompareSoftState(SoftState, *rn.PreSoftState) {
-		ready.SoftState = &SoftState
+	if !CompareHardState(rn.HardState(), rn.PreHardState) {
+		ready.HardState = rn.HardState()
 	}
 	if len(rn.Raft.msgs) > 0 {
 		ready.Messages = rn.Raft.msgs
@@ -189,21 +190,23 @@ func (rn *RawNode) Ready() Ready {
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	HardState := pb.HardState{
-		Term:   rn.Raft.Term,
-		Vote:   rn.Raft.Vote,
-		Commit: rn.Raft.RaftLog.committed,
-	}
-	SoftState := SoftState{
-		Lead:      rn.Raft.Lead,
-		RaftState: rn.Raft.State,
-	}
-
-	if !CompareHardState(HardState, rn.PreHardState) {
+	if !CompareHardState(rn.HardState(), rn.PreHardState) {
 		return true
 	}
 
-	if !CompareSoftState(SoftState, *rn.PreSoftState) {
+	if !CompareSoftState(*rn.SoftState(), *rn.PreSoftState) {
+		return true
+	}
+
+	if len(rn.Raft.msgs) > 0 {
+		return true
+	}
+
+	if len(rn.Raft.RaftLog.unstableEntries()) > 0 {
+		return true
+	}
+
+	if len(rn.Raft.RaftLog.nextEnts()) > 0 {
 		return true
 	}
 
@@ -221,7 +224,12 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
 
-	rn.PreHardState = rd.HardState
+	if !CompareHardState(rn.HardState(), rn.PreHardState) {
+		rn.PreHardState = rn.HardState()
+	}
+	// if !CompareSoftState(*rn.SoftState(), *rn.PreSoftState) {
+	// 	rn.PreSoftState = rn.SoftState()
+	// }
 
 }
 
@@ -242,6 +250,7 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }
 
+// 相同返回true
 func CompareHardState(h1, h2 pb.HardState) bool {
 	if h1.Term != h2.Term || h1.Commit != h2.Commit || h1.Vote != h2.Vote {
 		return false
@@ -249,6 +258,7 @@ func CompareHardState(h1, h2 pb.HardState) bool {
 	return true
 }
 
+// 相同返回true
 func CompareSoftState(s1, s2 SoftState) bool {
 	if s1.Lead != s2.Lead || s1.RaftState != s2.RaftState {
 		return false
