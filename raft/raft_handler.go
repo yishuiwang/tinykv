@@ -37,7 +37,6 @@ func (r *Raft) RequestVote() {
 func (r *Raft) HandleRequestVote(m pb.Message) {
 	// 1. Reply false if term < currentTerm (§5.1)
 	if m.Term < r.Term {
-		log.Warnf("r%d term %d > m.term %d reject from %d", r.id, r.Term, m.Term, m.From)
 		r.sendRequestVoteResponse(m.From, true)
 		return
 	}
@@ -172,7 +171,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// whose term matches prevLogTerm (§5.3)
 	// m.Index 相当于 prevLogIndex ，检查上一条日志是否匹配
 	if m.Index > r.RaftLog.LastIndex() {
-		log.Warn("Reject append request from", m.From, "because of index")
 		r.sendAppendResponse(m.From, true)
 		return
 	}
@@ -238,6 +236,33 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 	}
 
 	r.updateCommit()
+}
+
+// handleSnapshot handle Snapshot RPC request
+func (r *Raft) handleSnapshot(m pb.Message) {
+	// Your Code Here (2C).
+	if m.Term < r.Term {
+		r.sendAppendResponse(m.From, true)
+		return
+	}
+	if m.Snapshot.Metadata.Index <= r.RaftLog.committed {
+		r.sendAppendResponse(m.From, false)
+		return
+	}
+
+	r.becomeFollower(m.Term, m.From)
+
+	r.RaftLog.entries = nil
+	r.RaftLog.dummyIndex = m.Snapshot.Metadata.Index
+	r.RaftLog.applied = m.Snapshot.Metadata.Index
+	r.RaftLog.stabled = m.Snapshot.Metadata.Index
+	r.RaftLog.pendingSnapshot = m.Snapshot
+
+	r.Prs = make(map[uint64]*Progress)
+	for _, pr := range m.Snapshot.Metadata.ConfState.Nodes {
+		r.Prs[pr] = &Progress{}
+	}
+	r.sendAppendResponse(m.From, false)
 }
 
 // 比较谁的日志更新

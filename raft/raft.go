@@ -410,11 +410,6 @@ func (r *Raft) Step(m pb.Message) error {
 	return nil
 }
 
-// handleSnapshot handle Snapshot RPC request
-func (r *Raft) handleSnapshot(m pb.Message) {
-	// Your Code Here (2C).
-}
-
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).

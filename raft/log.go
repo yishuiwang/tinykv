@@ -74,7 +74,7 @@ func newLog(storage Storage) *RaftLog {
 		stabled:         0,
 		dummyIndex:      0,
 		entries:         make([]pb.Entry, 0),
-		pendingSnapshot: new(pb.Snapshot),
+		pendingSnapshot: nil,
 	}
 
 	r.committed = hardState.Commit
@@ -126,6 +126,9 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
+	if l.pendingSnapshot != nil {
+		return l.pendingSnapshot.Metadata.Index
+	}
 	if len(l.entries) == 0 {
 		index, _ := l.storage.LastIndex()
 		return index
@@ -144,6 +147,14 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	term, err := l.storage.Term(i)
 	if err == nil {
 		return term, nil
+	}
+	if err == ErrUnavailable && l.pendingSnapshot != nil {
+		if i == l.pendingSnapshot.Metadata.Index {
+			return l.pendingSnapshot.Metadata.Term, nil
+		}
+		if i < l.pendingSnapshot.Metadata.Index {
+			return 0, ErrCompacted
+		}
 	}
 	return 0, err
 }
