@@ -343,6 +343,8 @@ func StepFollower(r *Raft, m pb.Message) error {
 		r.HandleRequestVote(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	}
 	return nil
 }
@@ -363,6 +365,8 @@ func StepCandidate(r *Raft, m pb.Message) error {
 		r.HandleRequestVote(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	}
 	return nil
 }
@@ -392,6 +396,8 @@ func StepLeader(r *Raft, m pb.Message) error {
 		r.HandleHeartbeatResponse(m)
 	case pb.MessageType_MsgAppendResponse:
 		r.HandleAppendResponse(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.HandleVoteResponse(m)
 	}
 	return nil
 }
