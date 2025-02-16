@@ -66,14 +66,46 @@ func (d *peerMsgHandler) HandleRaftReady() {
 }
 
 func (d *peerMsgHandler) process(entry *eraftpb.Entry) {
-	switch entry.EntryType {
-	case eraftpb.EntryType_EntryNormal:
-		d.execRaftLog(entry)
-	case eraftpb.EntryType_EntryConfChange:
+	msg := &raft_cmdpb.RaftCmdRequest{}
+	err := msg.Unmarshal(entry.Data)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if msg.AdminRequest != nil {
+		d.processAdminRequest(entry)
+	} else {
+		d.processNoramlRequest(entry)
+	}
+
+	// switch entry.EntryType {
+	// case eraftpb.EntryType_EntryNormal:
+	// 	d.execRaftLog(entry)
+	// case eraftpb.EntryType_EntryConfChange:
+	//}
+}
+
+func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry) {
+	req := new(raft_cmdpb.RaftCmdRequest)
+	err := req.Unmarshal(entry.Data)
+	if err != nil {
+		log.Fatal(err)
+	}
+	switch req.AdminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		compact := req.AdminRequest.GetCompactLog()
+		applyState := d.peerStorage.applyState
+		if compact.CompactIndex >= applyState.TruncatedState.Index {
+			applyState.TruncatedState.Index = compact.CompactIndex
+			applyState.TruncatedState.Term = compact.CompactTerm
+			wb := &engine_util.WriteBatch{}
+			wb.SetMeta(meta.ApplyStateKey(d.regionId), applyState)
+			wb.WriteToDB(d.peerStorage.Engines.Kv)
+		}
 	}
 }
 
-func (d *peerMsgHandler) execRaftLog(entry *eraftpb.Entry) {
+func (d *peerMsgHandler) processNoramlRequest(entry *eraftpb.Entry) {
 	if entry.Data == nil {
 		return
 	}
@@ -263,6 +295,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	if msg.AdminRequest != nil {
+		d.proposeAdminRequest(msg, cb)
+	} else {
+		d.proposeNormalRequest(msg, cb)
+	}
+}
+
+func (d *peerMsgHandler) proposeNormalRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	var key []byte
 	req := msg.Requests[0]
 	switch req.CmdType {
@@ -273,7 +313,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	case raft_cmdpb.CmdType_Delete:
 		key = req.Delete.Key
 	}
-	err = util.CheckKeyInRegion(key, d.Region())
+	err := util.CheckKeyInRegion(key, d.Region())
 	if err != nil {
 		cb.Done(ErrResp(err))
 		return
@@ -293,8 +333,15 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
-	log.Info("propose raft command", d.Tag, msg)
+}
 
+func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
+	req := msg.AdminRequest
+	switch req.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		data, _ := msg.Marshal()
+		d.RaftGroup.Propose(data)
+	}
 }
 
 func (d *peerMsgHandler) onTick() {

@@ -374,7 +374,6 @@ func StepCandidate(r *Raft, m pb.Message) error {
 func StepLeader(r *Raft, m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgPropose:
-		log.Info("StepLeader", "MsgPropose", m.String())
 		r.HandleMsgPropose(m)
 	case pb.MessageType_MsgAppend:
 		if m.Term > r.Term {

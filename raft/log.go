@@ -94,6 +94,11 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	firstIndex, _ := l.storage.FirstIndex()
+	if firstIndex > l.dummyIndex+1 && firstIndex < l.LastIndex() {
+		l.entries = l.entries[firstIndex-l.dummyIndex-1:]
+		l.dummyIndex = firstIndex - 1
+	}
 }
 
 // allEntries return all the entries not compacted.
@@ -101,12 +106,18 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
+	if len(l.entries) == 0 {
+		return nil
+	}
 	return l.entries[1:]
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+	if len(l.entries) == 0 {
+		return nil
+	}
 	begin := l.stabled + 1 - l.dummyIndex
 	unstable := make([]pb.Entry, 0)
 	unstable = append(unstable, l.entries[begin:]...)
@@ -116,6 +127,9 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+	if len(l.entries) == 0 {
+		return nil
+	}
 	begin := l.applied + 1 - l.dummyIndex
 	end := l.committed + 1 - l.dummyIndex
 	ents = make([]pb.Entry, 0)
