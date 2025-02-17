@@ -228,7 +228,7 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 		r.Prs[m.From].Next = m.Index + 1
 	} else {
 		// 尝试减少Next
-		if r.Prs[m.From].Next > 0 {
+		if r.Prs[m.From].Next > 1 {
 			r.Prs[m.From].Next--
 			r.sendAppend(m.From)
 			return

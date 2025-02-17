@@ -294,6 +294,7 @@ func (r *Raft) becomeLeader() {
 	r.RaftLog.entries = append(r.RaftLog.entries, noop)
 
 	// 更新Leader的Next和Match
+	log.Info("becomeLeader", "id", r.id, "term", r.Term, "commit", r.RaftLog.committed, "LastIndex", r.RaftLog.LastIndex())
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 
@@ -395,8 +396,6 @@ func StepLeader(r *Raft, m pb.Message) error {
 		r.HandleHeartbeatResponse(m)
 	case pb.MessageType_MsgAppendResponse:
 		r.HandleAppendResponse(m)
-	case pb.MessageType_MsgRequestVoteResponse:
-		r.HandleVoteResponse(m)
 	}
 	return nil
 }
