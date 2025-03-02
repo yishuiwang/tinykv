@@ -230,7 +230,7 @@ func (rn *RawNode) Advance(rd Ready) {
 	// if !CompareSoftState(*rn.SoftState(), *rn.PreSoftState) {
 	// 	rn.PreSoftState = rn.SoftState()
 	// }
-
+	// rn.Raft.RaftLog.maybeCompact()
 }
 
 // GetProgress return the Progress of this node and its peers, if this

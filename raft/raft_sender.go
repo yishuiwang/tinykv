@@ -13,6 +13,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	pr := r.Prs[to]
 	preLogIndex := pr.Next - 1
+	log.Info("send append", "to", to, "preLogIndex", preLogIndex, "pr.Next", pr.Next)
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
 		// 发送的日志已经被压缩,改为发送快照
@@ -118,6 +119,16 @@ func (r *Raft) sendSnapshot(to uint64) {
 		To:       to,
 		Term:     r.Term,
 		Snapshot: &snapshot,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) sendTimeoutNow(to uint64) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
 	}
 	r.msgs = append(r.msgs, msg)
 }

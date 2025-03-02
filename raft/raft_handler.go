@@ -71,6 +71,9 @@ func (r *Raft) HandleRequestVote(m pb.Message) {
 
 // HandleVoteResponse 处理投票响应
 func (r *Raft) HandleVoteResponse(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, m.From)
 		r.Vote = None
@@ -217,6 +220,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 // HandleAppendResponse 处理AppendEntries响应
 func (r *Raft) HandleAppendResponse(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, None)
 		return
@@ -236,6 +242,28 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 	}
 
 	r.updateCommit()
+	if m.From == r.leadTransferee {
+		r.HandleTransferLeader(m)
+	}
+}
+
+func (r *Raft) HandleTransferLeader(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
+	if m.From == r.id {
+		return
+	}
+	if _, ok := r.Prs[m.From]; !ok {
+		return
+	}
+	r.leadTransferee = m.From
+
+	if r.Prs[m.From].Match != r.RaftLog.LastIndex() {
+		r.sendAppend(m.From)
+	} else {
+		r.sendTimeoutNow(m.From)
+	}
 }
 
 // handleSnapshot handle Snapshot RPC request

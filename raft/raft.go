@@ -188,9 +188,10 @@ func newRaft(c *Config) *Raft {
 		c.peers = confState.Nodes
 	}
 	lastIndex := r.RaftLog.LastIndex()
-	r.Prs[r.id] = &Progress{lastIndex, lastIndex + 1}
 	for _, id := range c.peers {
-		if id != r.id {
+		if id == r.id {
+			r.Prs[id] = &Progress{lastIndex, lastIndex + 1}
+		} else {
 			r.Prs[id] = &Progress{0, lastIndex + 1}
 		}
 	}
@@ -249,13 +250,16 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Vote = None
 	r.voteCount = 0
 	r.rejectCount = 0
-
+	r.leadTransferee = None
 	r.electionElapsed = 0
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
 	r.State = StateCandidate
 	r.Term++
 	r.Vote = r.id
@@ -274,6 +278,9 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	log.Error("node", r.id, "term", r.Term, "becomeLeader")
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
 	r.State = StateLeader
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
@@ -346,6 +353,14 @@ func StepFollower(r *Raft, m pb.Message) error {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.becomeCandidate()
+		r.RequestVote()
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	}
 	return nil
 }
@@ -368,6 +383,11 @@ func StepCandidate(r *Raft, m pb.Message) error {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	}
 	return nil
 }
@@ -396,6 +416,8 @@ func StepLeader(r *Raft, m pb.Message) error {
 		r.HandleHeartbeatResponse(m)
 	case pb.MessageType_MsgAppendResponse:
 		r.HandleAppendResponse(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.HandleTransferLeader(m)
 	}
 	return nil
 }
@@ -417,9 +439,16 @@ func (r *Raft) Step(m pb.Message) error {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	r.Prs[id] = &Progress{0, 1}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; ok {
+		delete(r.Prs, id)
+		if r.State == StateLeader {
+			r.updateCommit()
+		}
+	}
 }
