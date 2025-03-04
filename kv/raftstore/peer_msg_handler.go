@@ -78,11 +78,6 @@ func (d *peerMsgHandler) process(entry *eraftpb.Entry) {
 		d.processNoramlRequest(entry)
 	}
 
-	// switch entry.EntryType {
-	// case eraftpb.EntryType_EntryNormal:
-	// 	d.execRaftLog(entry)
-	// case eraftpb.EntryType_EntryConfChange:
-	//}
 }
 
 func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry) {
@@ -102,6 +97,10 @@ func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry) {
 			wb.SetMeta(meta.ApplyStateKey(d.regionId), applyState)
 			wb.WriteToDB(d.peerStorage.Engines.Kv)
 		}
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+		log.Warn("transfer leader")
+		transfer := req.AdminRequest.GetTransferLeader()
+		d.RaftGroup.TransferLeader(transfer.Peer.Id)
 	}
 }
 
@@ -341,6 +340,15 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 	case raft_cmdpb.AdminCmdType_CompactLog:
 		data, _ := msg.Marshal()
 		d.RaftGroup.Propose(data)
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+		d.RaftGroup.TransferLeader(req.TransferLeader.Peer.Id)
+		cb.Done(&raft_cmdpb.RaftCmdResponse{
+			Header: &raft_cmdpb.RaftResponseHeader{},
+			AdminResponse: &raft_cmdpb.AdminResponse{
+				CmdType:        raft_cmdpb.AdminCmdType_TransferLeader,
+				TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
+			},
+		})
 	}
 }
 
