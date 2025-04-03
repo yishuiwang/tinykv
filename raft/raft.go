@@ -439,7 +439,17 @@ func (r *Raft) Step(m pb.Message) error {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
-	r.Prs[id] = &Progress{0, 1}
+	log.Warn("addNode", "id", id)
+	// r.Prs[id] = &Progress{0, 1}
+	if id == r.id {
+		r.Prs[id] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
+	} else {
+		r.Prs[id] = &Progress{0, r.RaftLog.LastIndex() + 1}
+	}
+
+	if r.State == StateLeader {
+		r.updateCommit()
+	}
 }
 
 // removeNode remove a node from raft group
@@ -448,6 +458,7 @@ func (r *Raft) removeNode(id uint64) {
 	if _, ok := r.Prs[id]; ok {
 		delete(r.Prs, id)
 		if r.State == StateLeader {
+			log.Warn("r.peers", r.Prs)
 			r.updateCommit()
 		}
 	}
