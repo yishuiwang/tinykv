@@ -3,6 +3,7 @@
 package raft
 
 import (
+	"errors"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -13,11 +14,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	pr := r.Prs[to]
 	preLogIndex := pr.Next - 1
-	log.Info("send append", "to", to, "preLogIndex", preLogIndex, "pr.Next", pr.Next)
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
 		// 发送的日志已经被压缩,改为发送快照
-		if err == ErrCompacted {
+		if errors.Is(err, ErrCompacted) {
 			r.sendSnapshot(to)
 			return true
 		}
@@ -45,7 +45,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 		LogTerm: preLogTerm,
 		Index:   preLogIndex,
 	}
-	log.Debug("send append message", "from", r.id, "to", to, "entries", entry)
 	r.msgs = append(r.msgs, msg)
 
 	return true
@@ -108,6 +107,7 @@ func (r *Raft) sendAppendResponse(to uint64, reject bool) {
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
+	log.Error("send snapshot", "to", to)
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
 		log.Error("send snapshot failed", "error", err)

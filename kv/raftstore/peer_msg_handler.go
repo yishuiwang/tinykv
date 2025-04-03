@@ -52,20 +52,26 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		d.Send(d.ctx.trans, rd.Messages)
 		if len(rd.CommittedEntries) > 0 {
 			for _, entry := range rd.CommittedEntries {
-				wb := &engine_util.WriteBatch{}
-				d.process(&entry)
-				wb.SetMeta(meta.RaftLogKey(d.regionId, entry.Index), &entry)
+				KvWb := &engine_util.WriteBatch{}
+				d.process(&entry, KvWb)
+				//KvWb.SetMeta(meta.RaftLogKey(d.regionId, entry.Index), &entry)
 				// 应用到状态机
-				d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
-				wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
-				wb.WriteToDB(d.peerStorage.Engines.Kv)
+				d.peerStorage.applyState.AppliedIndex = entry.Index
+				KvWb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+				//KvWb.WriteToDB(d.peerStorage.Engines.Kv)
+				d.peerStorage.Engines.WriteKV(KvWb)
 			}
 		}
 		d.RaftGroup.Advance(rd)
 	}
 }
 
-func (d *peerMsgHandler) process(entry *eraftpb.Entry) {
+func (d *peerMsgHandler) process(entry *eraftpb.Entry, KvWb *engine_util.WriteBatch) {
+	if entry.EntryType == eraftpb.EntryType_EntryConfChange {
+		d.processConfChange(entry, KvWb)
+		return
+	}
+
 	msg := &raft_cmdpb.RaftCmdRequest{}
 	err := msg.Unmarshal(entry.Data)
 	if err != nil {
@@ -93,18 +99,16 @@ func (d *peerMsgHandler) processConfChange(entry *eraftpb.Entry, wb *engine_util
 		if compact.CompactIndex >= applyState.TruncatedState.Index {
 			applyState.TruncatedState.Index = compact.CompactIndex
 			applyState.TruncatedState.Term = compact.CompactTerm
-			wb := &engine_util.WriteBatch{}
-			wb.SetMeta(meta.ApplyStateKey(d.regionId), applyState)
-			wb.WriteToDB(d.peerStorage.Engines.Kv)
+			KvWb.SetMeta(meta.ApplyStateKey(d.regionId), applyState)
+			// TODO: d.ScheduleCompactLog(compactLog.CompactIndex)
 		}
 	case raft_cmdpb.AdminCmdType_TransferLeader:
-		log.Warn("transfer leader")
 		transfer := req.AdminRequest.GetTransferLeader()
 		d.RaftGroup.TransferLeader(transfer.Peer.Id)
 	}
 }
 
-func (d *peerMsgHandler) processNoramlRequest(entry *eraftpb.Entry, KvWb *engine_util.WriteBatch) {
+func (d *peerMsgHandler) processNormalRequest(entry *eraftpb.Entry, KvWb *engine_util.WriteBatch) {
 	if entry.Data == nil {
 		return
 	}
@@ -124,7 +128,7 @@ func (d *peerMsgHandler) processNoramlRequest(entry *eraftpb.Entry, KvWb *engine
 	}
 	proposal := d.findProposal(entry.Index, entry.Term)
 	for _, req := range req.Requests {
-		log.Infof("processNoramlRequest %d, type: %d", d.regionId, req.CmdType)
+		log.Infof("processNormalRequest %d, type: %d", d.regionId, req.CmdType)
 		switch req.CmdType {
 		case raft_cmdpb.CmdType_Get:
 			key, cf := req.Get.Key, req.Get.Cf
@@ -135,6 +139,7 @@ func (d *peerMsgHandler) processNoramlRequest(entry *eraftpb.Entry, KvWb *engine
 				Get:     &raft_cmdpb.GetResponse{Value: value},
 			})
 		case raft_cmdpb.CmdType_Put:
+			log.Infof("put key: %s, value: %s", req.Put.Key, req.Put.Value)
 			key, cf := req.Put.Key, req.Put.Cf
 			value := req.Put.Value
 			KvWb.SetCF(cf, key, value)
@@ -144,6 +149,7 @@ func (d *peerMsgHandler) processNoramlRequest(entry *eraftpb.Entry, KvWb *engine
 			})
 			// KvWb.WriteToDB(d.peerStorage.Engines.Kv)
 		case raft_cmdpb.CmdType_Delete:
+			log.Infof("delete key: %s", req.Delete.Key)
 			key, cf := req.Delete.Key, req.Delete.Cf
 			KvWb.DeleteCF(cf, key)
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
@@ -151,12 +157,15 @@ func (d *peerMsgHandler) processNoramlRequest(entry *eraftpb.Entry, KvWb *engine
 				Delete:  &raft_cmdpb.DeleteResponse{},
 			})
 		case raft_cmdpb.CmdType_Snap:
+			log.Infof("applyNormalRequest %d Snap %v", d.PeerId(), d.Region())
 			d.peerStorage.applyState.AppliedIndex = entry.Index
 			KvWb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 			KvWb.WriteToDB(d.peerStorage.Engines.Kv)
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 				CmdType: raft_cmdpb.CmdType_Snap,
-				Snap:    &raft_cmdpb.SnapResponse{},
+				Snap: &raft_cmdpb.SnapResponse{
+					Region: d.Region(),
+				},
 			})
 			if proposal != nil {
 				proposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
