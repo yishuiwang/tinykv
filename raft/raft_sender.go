@@ -12,14 +12,15 @@ import (
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
+	log.Infof("raft %d entries %d", r.id, len(r.RaftLog.entries))
 	pr := r.Prs[to]
 	preLogIndex := pr.Next - 1
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
 		// 发送的日志已经被压缩,改为发送快照
 		if errors.Is(err, ErrCompacted) {
-			r.sendSnapshot(to)
-			return true
+			log.Infof("entry compacted, send snapshot to %d", to)
+			return r.sendSnapshot(to)
 		}
 		return false
 	}
@@ -106,13 +107,15 @@ func (r *Raft) sendAppendResponse(to uint64, reject bool) {
 	r.msgs = append(r.msgs, msg)
 }
 
-func (r *Raft) sendSnapshot(to uint64) {
-	log.Error("send snapshot", "to", to)
+func (r *Raft) sendSnapshot(to uint64) bool {
 	snapshot, err := r.RaftLog.storage.Snapshot()
-	if err != nil {
-		log.Error("send snapshot failed", "error", err)
-		return
+	if errors.Is(err, ErrSnapshotTemporarilyUnavailable) {
+		log.Warn("snapshot temporarily unavailable")
+		return false
 	}
+	log.Infof("snapshot index %d, term %d, to %d", snapshot.Metadata.Index, snapshot.Metadata.Term, to)
+	log.Infof("raft commit index %d, lastIndex %d", r.RaftLog.committed, r.RaftLog.LastIndex())
+
 	msg := pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
 		From:     r.id,
@@ -121,6 +124,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 		Snapshot: &snapshot,
 	}
 	r.msgs = append(r.msgs, msg)
+	return true
 }
 
 func (r *Raft) sendTimeoutNow(to uint64) {

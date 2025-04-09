@@ -179,8 +179,12 @@ func newRaft(c *Config) *Raft {
 	r := new(Raft)
 	r.id = c.ID
 	r.RaftLog = newLog(c.Storage)
+	// 恢复hardState
 	r.Term = hardState.Term
 	r.Vote = hardState.Vote
+	if hardState.Commit > 0 {
+		r.RaftLog.committed = hardState.Commit
+	}
 	r.State = StateFollower
 	r.Prs = make(map[uint64]*Progress)
 	r.votes = make(map[uint64]bool)
@@ -277,7 +281,6 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-	log.Error("node", r.id, "term", r.Term, "becomeLeader")
 	if _, ok := r.Prs[r.id]; !ok {
 		return
 	}
@@ -290,31 +293,35 @@ func (r *Raft) becomeLeader() {
 		r.Prs[id].Match = 0
 		r.Prs[id].Next = r.RaftLog.LastIndex() + 1
 	}
-
-	// Leader should propose a noop entry on its term
-	noop := pb.Entry{
-		Term:  r.Term,
-		Index: r.RaftLog.LastIndex() + 1,
-		Data:  nil,
-	}
-
-	r.RaftLog.entries = append(r.RaftLog.entries, noop)
-
 	// 更新Leader的Next和Match
-	log.Info("becomeLeader", "id", r.id, "term", r.Term, "commit", r.RaftLog.committed, "LastIndex", r.RaftLog.LastIndex())
+	log.Errorf("raft %d,lastIndex, %d,entries: %v", r.id, r.RaftLog.LastIndex(), r.RaftLog.allEntries())
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 
-	r.broadcast()
-	r.updateCommit()
+	// Leader should propose a noop entry on its term
+	noop := pb.Entry{
+		Term: r.Term,
+		//Index: r.RaftLog.LastIndex() + 1,
+		Data: nil,
+	}
+	//
+	//log.Infof("raft %v becomeLeader, noop %v", r.id, noop)
+	//r.RaftLog.entries = append(r.RaftLog.entries, noop)
 
-	// r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&noop}})
+	//r.broadcast()
+	//r.updateCommit()
+
+	_ = r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&noop}})
 }
 
 // updateCommit 更新commitIndex
 // reference: https://github.com/RinChanNOWWW/tinykv-impl/blob/master/raft/raft.go#L791
 func (r *Raft) updateCommit() {
 	commitUpdate := false
+	log.Infof("raft %d try to update commit %d lastindex %d", r.id, r.RaftLog.committed, r.RaftLog.LastIndex())
+	//for i, p := range r.Prs {
+	//	log.Infof("raft %d prs %d match %d next %d", r.id, i, p.Match, p.Next)
+	//}
 	for i := r.RaftLog.committed + 1; i <= r.RaftLog.LastIndex(); i++ {
 		matchCount := 0
 		for _, p := range r.Prs {
@@ -439,8 +446,7 @@ func (r *Raft) Step(m pb.Message) error {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
-	log.Warn("addNode", "id", id)
-	// r.Prs[id] = &Progress{0, 1}
+	log.Infof("raft %d addNode %d", r.id, id)
 	if id == r.id {
 		r.Prs[id] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
 	} else {
@@ -448,7 +454,8 @@ func (r *Raft) addNode(id uint64) {
 	}
 
 	if r.State == StateLeader {
-		r.updateCommit()
+		log.Infof("raft %d send heartbeat to %d", r.id, id)
+		r.sendHeartbeat(id)
 	}
 }
 

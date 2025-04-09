@@ -16,7 +16,7 @@ package raft
 
 import (
 	"errors"
-
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -168,6 +168,7 @@ func (rn *RawNode) SoftState() *SoftState {
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 	ready := Ready{}
+	log.Infof("raft %d,dummyIndex=%d,stabled=%d,applied=%d", rn.Raft.id, rn.Raft.RaftLog.dummyIndex, rn.Raft.RaftLog.stabled, rn.Raft.RaftLog.applied)
 	ready.Entries = rn.Raft.RaftLog.unstableEntries()
 	ready.CommittedEntries = rn.Raft.RaftLog.nextEnts()
 
@@ -217,11 +218,17 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	log.Infof("raft %d,Advance rd=%+v", rn.Raft.id, rd.Entries)
+	log.Infof("raft stabled%d,applied%d", rn.Raft.RaftLog.stabled, rn.Raft.RaftLog.applied)
 	if len(rd.Entries) > 0 {
-		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+		//rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+		stabled := rd.Entries[len(rd.Entries)-1].Index
+		rn.Raft.RaftLog.stabled = max(stabled, rn.Raft.RaftLog.stabled)
 	}
 	if len(rd.CommittedEntries) > 0 {
-		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+		//rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+		applied := rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+		rn.Raft.RaftLog.applied = max(applied, rn.Raft.RaftLog.applied)
 	}
 
 	if !CompareHardState(rn.HardState(), rn.PreHardState) {

@@ -129,6 +129,7 @@ func (r *Raft) HandleMsgPropose(m pb.Message) {
 // handleHeartbeat 处理心跳
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	log.Infof("raft %v handleHeartbeat, m=%+v", r.id, m)
 	if m.Term < r.Term {
 		r.sendHeartbeatResponse(m.From, true)
 		return
@@ -149,6 +150,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 // HandleHeartbeatResponse 处理心跳响应
 func (r *Raft) HandleHeartbeatResponse(m pb.Message) {
+	log.Infof("raft %v handleHeartbeatResponse, m=%+v", r.id, m)
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, None)
 		return
@@ -170,56 +172,17 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// 合法Leader出现，节点必须更新其任期并承认新的 Leader
 	r.becomeFollower(m.Term, m.From)
 
-	// Reply false if log doesn’t contain an entry at prevLogIndex
-	// whose term matches prevLogTerm (§5.3)
-	// m.Index 相当于 prevLogIndex ，检查上一条日志是否匹配
-	if m.Index > r.RaftLog.LastIndex() {
-		r.sendAppendResponse(m.From, true)
-		return
-	}
-	preLogTerm, err := r.RaftLog.Term(m.Index)
-	if err != nil {
-		r.sendAppendResponse(m.From, true)
-		return
-	}
-	if m.LogTerm != preLogTerm {
-		r.sendAppendResponse(m.From, true)
-		return
-	}
+	res := r.RaftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries)
 
-	// If an existing entry conflicts with a new one (same index
-	// but different terms), delete the existing entry and all that
-	// follow it (§5.3)
-	// 检查冲突
-	for i, j := m.Index+1, 0; i <= r.RaftLog.LastIndex() && j < len(m.Entries); i, j = i+1, j+1 {
-		term, _ := r.RaftLog.Term(i)
-		if term != m.Entries[j].Term {
-			r.RaftLog.RemoveEntriesAfter(i - 1)
-			// 如果冲突的日志在已提交的日志之前, 则
-			r.RaftLog.stabled = min(r.RaftLog.stabled, i-1)
-			break
-		}
-	}
-	// 添加新的entry
-	begin := r.RaftLog.LastIndex() - m.Index
-	for i := begin; i < uint64(len(m.Entries)); i++ {
-		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
-	}
-
-	// If leaderCommit > commitIndex,
-	// set commitIndex = min(leaderCommit, index of last new entry)
-	if m.Commit > r.RaftLog.committed {
-		lastNewEntry := m.Index
-		if len(m.Entries) > 0 {
-			lastNewEntry = m.Entries[len(m.Entries)-1].Index
-		}
-		r.RaftLog.committed = min(m.Commit, lastNewEntry)
-	}
-	r.sendAppendResponse(m.From, false)
+	r.sendAppendResponse(m.From, !res)
 }
 
 // HandleAppendResponse 处理AppendEntries响应
 func (r *Raft) HandleAppendResponse(m pb.Message) {
+	log.Infof("raft %v handleAppendResponse, m=%+v", r.id, m)
+	if m.From == r.leadTransferee {
+		r.HandleTransferLeader(m)
+	}
 	if _, ok := r.Prs[r.id]; !ok {
 		return
 	}
@@ -236,15 +199,13 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 		// 尝试减少Next
 		if r.Prs[m.From].Next > 1 {
 			r.Prs[m.From].Next--
+			log.Errorf("r.prs[%d].Next = %d", m.From, r.Prs[m.From].Next)
 			r.sendAppend(m.From)
 			return
 		}
 	}
 
 	r.updateCommit()
-	if m.From == r.leadTransferee {
-		r.HandleTransferLeader(m)
-	}
 }
 
 func (r *Raft) HandleTransferLeader(m pb.Message) {
@@ -269,6 +230,9 @@ func (r *Raft) HandleTransferLeader(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	if r.id == 2 {
+		log.Warnf("raft %v handleSnapshot, m=%+v", r.id, m.Snapshot.Metadata)
+	}
 	if m.Term < r.Term {
 		r.sendAppendResponse(m.From, true)
 		return
@@ -280,17 +244,26 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 
 	r.becomeFollower(m.Term, m.From)
 
-	r.RaftLog.entries = nil
-	r.RaftLog.dummyIndex = m.Snapshot.Metadata.Index
-	r.RaftLog.applied = m.Snapshot.Metadata.Index
-	r.RaftLog.stabled = m.Snapshot.Metadata.Index
-	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.RaftLog.ApplySnap(m.Snapshot)
 
 	r.Prs = make(map[uint64]*Progress)
 	for _, pr := range m.Snapshot.Metadata.ConfState.Nodes {
-		r.Prs[pr] = &Progress{}
+		//r.Prs[pr] = &Progress{}
+		if pr == r.id {
+			r.Prs[pr] = &Progress{
+				Match: r.RaftLog.LastIndex(),
+				Next:  r.RaftLog.LastIndex() + 1,
+			}
+		} else {
+			r.Prs[pr] = &Progress{
+				Match: 0,
+				Next:  r.RaftLog.LastIndex() + 1,
+			}
+		}
 	}
 	r.sendAppendResponse(m.From, false)
+	log.Infof("raft %v r.RaftLog.LastIndex()=%d, r.RaftLog.stabled=%d", r.id, r.RaftLog.LastIndex(), r.RaftLog.stabled)
+	log.Infof("raft %v apply snapshot, m=%+v", r.id, m)
 }
 
 // 比较谁的日志更新
