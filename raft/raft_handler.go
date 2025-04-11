@@ -101,19 +101,26 @@ func (r *Raft) HandleVoteResponse(m pb.Message) {
 }
 
 // HandleMsgPropose 处理Propose消息
-func (r *Raft) HandleMsgPropose(m pb.Message) {
+func (r *Raft) HandleMsgPropose(m pb.Message) error {
+	log.Infof("raft %d, HandleMsgPropose, m=%+v", r.id, m)
 	if len(m.Entries) == 0 {
-		// TODO:处理空消息
-		//log.Println("entries is empty")
+		log.Panic("log is empty!")
+	}
+	// 如果当前节点被移除了集群，丢弃提案
+	if _, ok := r.Prs[r.id]; !ok {
+		return ErrProposalDropped
 	}
 
-	for _, entry := range m.Entries {
-		entry.Term = r.Term
-		entry.Index = r.RaftLog.LastIndex() + 1
-
-		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+	for i, entry := range m.Entries {
+		if entry.EntryType == pb.EntryType_EntryConfChange {
+			if r.PendingConfIndex > r.RaftLog.applied {
+				return ErrProposalDropped
+			}
+			r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1
+		}
 	}
 
+	r.RaftLog.proposeEntries(r.Term, m.Entries)
 	// 更新Leader的Next和Match
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
@@ -124,6 +131,8 @@ func (r *Raft) HandleMsgPropose(m pb.Message) {
 	}
 
 	r.broadcast()
+
+	return nil
 }
 
 // handleHeartbeat 处理心跳
@@ -231,7 +240,7 @@ func (r *Raft) HandleTransferLeader(m pb.Message) {
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
 	if r.id == 2 {
-		log.Warnf("raft %v handleSnapshot, m=%+v", r.id, m.Snapshot.Metadata)
+		log.Warnf("raft 2 handleSnapshot, m=%+v", m.Snapshot.Metadata)
 	}
 	if m.Term < r.Term {
 		r.sendAppendResponse(m.From, true)

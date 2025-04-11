@@ -94,8 +94,9 @@ func newLog(storage Storage) *RaftLog {
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
 	firstIndex, _ := l.storage.FirstIndex()
-	if firstIndex > l.dummyIndex+1 && firstIndex < l.LastIndex() {
-		l.entries = l.entries[firstIndex-l.dummyIndex-1:]
+	if firstIndex > l.FirstIndex() && len(l.entries) > 0 {
+		entries := l.entries[firstIndex-l.FirstIndex():]
+		copy(l.entries, entries)
 		l.dummyIndex = firstIndex - 1
 	}
 }
@@ -177,7 +178,6 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	}
 	// 4.日志在 entries 中
 	offset := l.FirstIndex()
-	log.Infof("offset=%d, i=%d, len(l.entries)=%d", offset, i, len(l.entries))
 	return l.entries[i-offset].Term, nil
 }
 
@@ -193,6 +193,21 @@ func (l *RaftLog) Entries(left, right uint64) ([]pb.Entry, error) {
 		return l.entries[left-firstIndex : right-firstIndex], nil
 	}
 	return l.storage.Entries(left, right)
+}
+
+// leader节点添加新的日志，term index 是leader自身的
+func (l *RaftLog) proposeEntries(term uint64, entries []*pb.Entry) {
+	index := l.LastIndex()
+	for _, entry := range entries {
+		index++
+		entry.Index = index
+		l.entries = append(l.entries, pb.Entry{
+			EntryType: entry.EntryType,
+			Term:      term,
+			Index:     index,
+			Data:      entry.Data,
+		})
+	}
 }
 
 // 尝试将 Leader 的日志追加到 Follower

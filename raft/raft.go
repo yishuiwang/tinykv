@@ -294,7 +294,7 @@ func (r *Raft) becomeLeader() {
 		r.Prs[id].Next = r.RaftLog.LastIndex() + 1
 	}
 	// 更新Leader的Next和Match
-	log.Errorf("raft %d,lastIndex, %d,entries: %v", r.id, r.RaftLog.LastIndex(), r.RaftLog.allEntries())
+	log.Errorf("raft %d becomeLeader,lastIndex, %d,entries: %v", r.id, r.RaftLog.LastIndex(), r.RaftLog.allEntries())
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 
@@ -342,7 +342,7 @@ func (r *Raft) updateCommit() {
 	// it will broadcast the commit index by MessageType_MsgAppend messages.
 	// https://github.com/talent-plan/tinykv/pull/302
 	if commitUpdate {
-		log.Info("updateCommit", "id", r.id, "term", r.Term, "commit", r.RaftLog.committed)
+		log.Infof("raft %d ,updateCommit %d", r.id, r.RaftLog.committed)
 		r.broadcast()
 	}
 }

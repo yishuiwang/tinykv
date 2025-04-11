@@ -12,14 +12,13 @@ import (
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	log.Infof("raft %d entries %d", r.id, len(r.RaftLog.entries))
 	pr := r.Prs[to]
 	preLogIndex := pr.Next - 1
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
 		// 发送的日志已经被压缩,改为发送快照
 		if errors.Is(err, ErrCompacted) {
-			log.Infof("entry compacted, send snapshot to %d", to)
+			log.Warnf("entry compacted, send snapshot to %d", to)
 			return r.sendSnapshot(to)
 		}
 		return false
@@ -47,7 +46,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Index:   preLogIndex,
 	}
 	r.msgs = append(r.msgs, msg)
-
+	log.Infof("raft %d send append to %d, entries %v", r.id, to, entry)
 	return true
 }
 
