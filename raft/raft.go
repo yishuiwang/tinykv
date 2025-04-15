@@ -453,6 +453,8 @@ func (r *Raft) addNode(id uint64) {
 		r.Prs[id] = &Progress{0, r.RaftLog.LastIndex() + 1}
 	}
 
+	log.Infof("raft %d addNode %d, prs %v", r.id, id, r.Prs)
+
 	if r.State == StateLeader {
 		log.Infof("raft %d send heartbeat to %d", r.id, id)
 		r.sendHeartbeat(id)

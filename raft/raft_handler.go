@@ -102,7 +102,7 @@ func (r *Raft) HandleVoteResponse(m pb.Message) {
 
 // HandleMsgPropose 处理Propose消息
 func (r *Raft) HandleMsgPropose(m pb.Message) error {
-	log.Infof("raft %d, HandleMsgPropose, m=%+v", r.id, m)
+	log.Infof("raft %d, HandleMsgPropose", r.id)
 	if len(m.Entries) == 0 {
 		log.Panic("log is empty!")
 	}
@@ -113,10 +113,13 @@ func (r *Raft) HandleMsgPropose(m pb.Message) error {
 
 	for i, entry := range m.Entries {
 		if entry.EntryType == pb.EntryType_EntryConfChange {
+			// 存在还未apply的config change
 			if r.PendingConfIndex > r.RaftLog.applied {
+				log.Errorf("raft %d, already has pending conf change, pendingConfIndex=%d, applied=%d", r.id, r.PendingConfIndex, r.RaftLog.applied)
 				return ErrProposalDropped
+			} else {
+				r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1
 			}
-			r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1
 		}
 	}
 
@@ -127,6 +130,7 @@ func (r *Raft) HandleMsgPropose(m pb.Message) error {
 
 	// 如果只有一个节点, 则直接commit
 	if len(r.Prs) == 1 {
+		log.Infof("raft %d, only one node, commit", r.id)
 		r.RaftLog.committed = r.RaftLog.LastIndex()
 	}
 
