@@ -16,7 +16,8 @@ package raft
 
 import (
 	"errors"
-	"github.com/pingcap-incubator/tinykv/log"
+
+	"github.com/gogo/protobuf/proto"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -168,7 +169,7 @@ func (rn *RawNode) SoftState() *SoftState {
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 	ready := Ready{}
-	log.Infof("raft %d,dummyIndex=%d,stabled=%d,applied=%d,commit=%d", rn.Raft.id, rn.Raft.RaftLog.dummyIndex, rn.Raft.RaftLog.stabled, rn.Raft.RaftLog.applied, rn.Raft.RaftLog.committed)
+	// log.Infof("raft %d,dummyIndex=%d,stabled=%d,applied=%d,commit=%d", rn.Raft.id, rn.Raft.RaftLog.dummyIndex, rn.Raft.RaftLog.stabled, rn.Raft.RaftLog.applied, rn.Raft.RaftLog.committed)
 	ready.Entries = rn.Raft.RaftLog.unstableEntries()
 	ready.CommittedEntries = rn.Raft.RaftLog.nextEnts()
 
@@ -221,7 +222,7 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
-	log.Infof("raft %d,Advance rd=%+v,stabled=%d,applied=%d", rn.Raft.id, rd, rn.Raft.RaftLog.stabled, rn.Raft.RaftLog.applied)
+	// log.Infof("raft %d,Advance rd=%+v,stabled=%d,applied=%d", rn.Raft.id, rd, rn.Raft.RaftLog.stabled, rn.Raft.RaftLog.applied)
 	if len(rd.Entries) > 0 {
 		//rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
 		stabled := rd.Entries[len(rd.Entries)-1].Index
@@ -233,18 +234,18 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.Raft.RaftLog.applied = max(applied, rn.Raft.RaftLog.applied)
 	}
 
-	if !CompareHardState(rn.HardState(), rn.PreHardState) {
-		rn.PreHardState = rn.HardState()
+	if !IsEmptyHardState(rd.HardState) {
+		rn.PreHardState = rd.HardState
 	}
 
-	if &rd.Snapshot != nil {
-		//rn.Raft.RaftLog.stabled = rd.Snapshot.Metadata.Index
-		rn.Raft.RaftLog.pendingSnapshot = nil
+	if !IsEmptySnap(&rd.Snapshot) {
+		oldSnap := rn.Raft.RaftLog.pendingSnapshot
+		if !IsEmptySnap(oldSnap) && proto.Equal(oldSnap.Metadata, rd.Snapshot.Metadata) {
+			rn.Raft.RaftLog.pendingSnapshot = nil
+		}
+
 	}
-	log.Warnf("raft %d advanced commited=%d,stabled=%d,applied=%d,last=%d", rn.Raft.id, rn.Raft.RaftLog.committed, rn.Raft.RaftLog.stabled, rn.Raft.RaftLog.applied, rn.Raft.RaftLog.LastIndex())
-	// if !CompareSoftState(*rn.SoftState(), *rn.PreSoftState) {
-	// 	rn.PreSoftState = rn.SoftState()
-	// }
+
 	rn.Raft.RaftLog.maybeCompact()
 }
 

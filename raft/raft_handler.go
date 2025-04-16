@@ -108,9 +108,16 @@ func (r *Raft) HandleMsgPropose(m pb.Message) error {
 	}
 	// 如果当前节点被移除了集群，丢弃提案
 	if _, ok := r.Prs[r.id]; !ok {
+		log.Errorf("raft %d, not in the cluster, drop proposal", r.id)
 		return ErrProposalDropped
 	}
 
+	if r.leadTransferee != None {
+		log.Errorf("raft %d, transfer leader in progress, drop proposal", r.id)
+		return ErrProposalDropped
+	}
+
+	// 防止一次性提交多个config change
 	for i, entry := range m.Entries {
 		if entry.EntryType == pb.EntryType_EntryConfChange {
 			// 存在还未apply的config change

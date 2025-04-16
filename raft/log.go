@@ -164,6 +164,10 @@ func (l *RaftLog) matchTerm(index, term uint64) bool {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	// 对于第一个心跳或者 Follower 刚刚启动时，Leader 的 prevLogIndex 可能会是 0
+	if i == 0 {
+		return 0, nil
+	}
 	// 1.日志为快照最后一条日志
 	if i == l.snapshotIndex {
 		return l.snapshotTerm, nil
@@ -195,7 +199,7 @@ func (l *RaftLog) Entries(left, right uint64) ([]pb.Entry, error) {
 	return l.storage.Entries(left, right)
 }
 
-// leader节点添加新的日志，term index 是leader自身的
+// Leader 添加新的日志，term index 是leader自身的
 func (l *RaftLog) proposeEntries(term uint64, entries []*pb.Entry) {
 	index := l.LastIndex()
 	for _, entry := range entries {
@@ -210,7 +214,7 @@ func (l *RaftLog) proposeEntries(term uint64, entries []*pb.Entry) {
 	}
 }
 
-// 尝试将 Leader 的日志追加到 Follower
+// Follower 尝试追加 Leader 日志
 func (l *RaftLog) maybeAppend(index, term, commit uint64, entries []*pb.Entry) bool {
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
@@ -254,6 +258,10 @@ func (l *RaftLog) handleConflict(entries []*pb.Entry) {
 	}
 	// 没有找到冲突日志，说明收到的日志以包含在当前日志中
 	if conflictIndex == 0 {
+		return
+	}
+	if conflictIndex < l.FirstIndex() {
+		log.Panic("conflictIndex < l.FirstIndex()")
 		return
 	}
 	// 删除冲突的日志往后所有的日志

@@ -294,7 +294,7 @@ func (r *Raft) becomeLeader() {
 		r.Prs[id].Next = r.RaftLog.LastIndex() + 1
 	}
 	// 更新Leader的Next和Match
-	log.Errorf("raft %d becomeLeader,lastIndex, %d,entries: %v", r.id, r.RaftLog.LastIndex(), r.RaftLog.allEntries())
+	log.Errorf("raft %d becomeLeader,lastIndex, %d, commit %d applied %d", r.id, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 
@@ -447,10 +447,10 @@ func (r *Raft) Step(m pb.Message) error {
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
 	log.Infof("raft %d addNode %d", r.id, id)
-	if id == r.id {
-		r.Prs[id] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
-	} else {
-		r.Prs[id] = &Progress{0, r.RaftLog.LastIndex() + 1}
+	// 使Leader更快的发送snapshot
+	r.Prs[id] = &Progress{
+		Match: 0,
+		Next:  0,
 	}
 
 	log.Infof("raft %d addNode %d, prs %v", r.id, id, r.Prs)

@@ -255,11 +255,19 @@ func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb
 		log.Fatalf("err:%s", err)
 	}
 
+	// 防止重复处理
+	err = util.CheckRegionEpoch(msg, d.Region(), true)
+	if err != nil {
+		log.Warnf("CheckRegionEpoch err:%s", err)
+		d.processProposals(entry, ErrResp(err), nil)
+		return
+	}
+
 	changePeer := msg.AdminRequest.ChangePeer
 	targetPeer := changePeer.Peer
 
 	region := d.Region()
-	// 区分版本信息，防止重复处理
+	// 区分版本信息
 	d.Region().RegionEpoch.ConfVer++
 
 	// 检查是否存在peer
@@ -276,25 +284,26 @@ func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb
 	switch cc.ChangeType {
 	case eraftpb.ConfChangeType_AddNode:
 		if peerExists {
-			log.Fatalf("%s apply add node %d, but already exists", d.Tag, cc.NodeId)
+			log.Warnf("%s apply add node %d, but already exists", d.Tag, cc.NodeId)
 			return
 		}
-		log.Warnf("%s apply add node %d", d.Tag, cc.NodeId)
+		log.Warnf("%s apply add node %d Region.ConfVer %d", d.Tag, cc.NodeId, d.Region().RegionEpoch.ConfVer)
 		d.Region().Peers = append(d.Region().Peers, targetPeer)
 		d.insertPeerCache(targetPeer)
 
 	case eraftpb.ConfChangeType_RemoveNode:
 		if !peerExists {
-			log.Fatalf("%s apply remove node %d, but not exists", d.Tag, cc.NodeId)
+			log.Warnf("%s apply remove node %d, but not exists", d.Tag, cc.NodeId)
 			return
 		}
 		// 如果删除的节点是自己，销毁自己
 		if cc.NodeId == d.PeerId() {
 			log.Warnf("%s begin remove self %d", d.Tag, cc.NodeId)
 			d.destroyPeer()
+			// 此时完成当前 entry apply 后应直接退出，不能将数据写到 badger 里
 			return
 		}
-		log.Warnf("%s apply remove node %d", d.Tag, cc.NodeId)
+		log.Warnf("%s apply remove node %d Region.ConfVer %d", d.Tag, cc.NodeId, d.Region().RegionEpoch.ConfVer)
 		region.Peers = append(region.Peers[:peerIndex], region.Peers[peerIndex+1:]...)
 		d.Region().Peers = region.Peers
 		d.removePeerCache(cc.NodeId)
@@ -310,6 +319,22 @@ func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb
 		ChangePeer: &raft_cmdpb.ChangePeerResponse{},
 	}}
 	d.processProposals(entry, resp, nil)
+
+	d.notifyHeartbeatScheduler(region, d.peer)
+}
+
+func (d *peerMsgHandler) notifyHeartbeatScheduler(region *metapb.Region, peer *peer) {
+	clonedRegion := new(metapb.Region)
+	err := util.CloneMsg(region, clonedRegion)
+	if err != nil {
+		return
+	}
+	d.ctx.schedulerTaskSender <- &runner.SchedulerRegionHeartbeatTask{
+		Region:          clonedRegion,
+		Peer:            peer.Meta,
+		PendingPeers:    peer.CollectPendingPeers(),
+		ApproximateSize: peer.ApproximateSize,
+	}
 }
 
 // 参考https://asktug.com/t/topic/
@@ -499,9 +524,6 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 			term:  d.Term(),
 			cb:    cb,
 		})
-		for i := 0; i < len(d.proposals); i++ {
-			log.Errorf("propose %d-%d", d.proposals[i].index, d.proposals[i].term)
-		}
 		ctx, _ := msg.Marshal()
 		d.RaftGroup.ProposeConfChange(eraftpb.ConfChange{
 			ChangeType: req.ChangePeer.ChangeType,

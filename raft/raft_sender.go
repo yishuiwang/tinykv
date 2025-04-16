@@ -4,6 +4,8 @@ package raft
 
 import (
 	"errors"
+
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -15,13 +17,11 @@ func (r *Raft) sendAppend(to uint64) bool {
 	pr := r.Prs[to]
 	preLogIndex := pr.Next - 1
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
-	if err != nil {
-		// 发送的日志已经被压缩,改为发送快照
-		if errors.Is(err, ErrCompacted) {
-			log.Warnf("entry compacted, send snapshot to %d", to)
-			return r.sendSnapshot(to)
-		}
-		return false
+	// 1.发送的日志已经被压缩,改为发送快照
+	// 2.节点刚被创建，发送快照
+	if errors.Is(err, ErrCompacted) || pr.Next <= util.RaftInvalidIndex {
+		// log.Warnf("entry compacted, send snapshot to %d", to)
+		return r.sendSnapshot(to)
 	}
 	lastIndex := r.RaftLog.LastIndex()
 	if lastIndex < pr.Next {
@@ -46,7 +46,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Index:   preLogIndex,
 	}
 	r.msgs = append(r.msgs, msg)
-	log.Infof("raft %d send append to %d, entries %v", r.id, to, entry)
+	log.Infof("raft %d send append to %d, len entries %v", r.id, to, len(entries))
 	return true
 }
 
@@ -109,7 +109,7 @@ func (r *Raft) sendAppendResponse(to uint64, reject bool) {
 func (r *Raft) sendSnapshot(to uint64) bool {
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if errors.Is(err, ErrSnapshotTemporarilyUnavailable) {
-		log.Warn("snapshot temporarily unavailable")
+		// log.Warn("snapshot temporarily unavailable")
 		return false
 	}
 	log.Infof("snapshot index %d, term %d, to %d", snapshot.Metadata.Index, snapshot.Metadata.Term, to)
