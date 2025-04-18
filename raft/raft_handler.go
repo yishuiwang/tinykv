@@ -199,7 +199,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 // HandleAppendResponse 处理AppendEntries响应
 func (r *Raft) HandleAppendResponse(m pb.Message) {
-	log.Infof("raft %v handleAppendResponse, m=%+v", r.id, m)
+	log.Infof("raft %v handleAppendResponse, m=%+v", r.id, m.String())
 	if m.From == r.leadTransferee {
 		r.HandleTransferLeader(m)
 	}
@@ -213,8 +213,8 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 
 	if !m.Reject {
 		// 更新pr, m.Index是follower.RaftLog.LastIndex()
-		r.Prs[m.From].Match = m.Index
-		r.Prs[m.From].Next = m.Index + 1
+		r.Prs[m.From].Match = max(r.Prs[m.From].Match, m.Index)
+		r.Prs[m.From].Next = max(r.Prs[m.From].Next, m.Index+1)
 	} else {
 		// 尝试减少Next
 		if r.Prs[m.From].Next > 1 {
@@ -225,6 +225,7 @@ func (r *Raft) HandleAppendResponse(m pb.Message) {
 		}
 	}
 
+	// TODO: 当需要更新的时候才需要广播，需要优化
 	r.updateCommit()
 }
 

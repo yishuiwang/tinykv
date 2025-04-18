@@ -184,7 +184,7 @@ func (d *peerMsgHandler) handleCommittedNormalEntry(entry *eraftpb.Entry, KvWb *
 
 	// 一条日志里只有一个request
 	request := req.Requests[0]
-	log.Infof("processNormalRequest %d, type: %d", d.regionId, request.CmdType)
+	// log.Infof("processNormalRequest %d, type: %d", d.regionId, request.CmdType)
 
 	switch request.CmdType {
 	case raft_cmdpb.CmdType_Get:
@@ -198,13 +198,13 @@ func (d *peerMsgHandler) handleCommittedNormalEntry(entry *eraftpb.Entry, KvWb *
 
 		key, cf := request.Get.Key, request.Get.Cf
 		value, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, cf, key)
-		log.Infof("get key: %s, value: %s", key, value)
+		// log.Infof("get key: %s, value: %s", key, value)
 		resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 			CmdType: raft_cmdpb.CmdType_Get,
 			Get:     &raft_cmdpb.GetResponse{Value: value},
 		})
 	case raft_cmdpb.CmdType_Put:
-		log.Infof("put key: %s, value: %s", request.Put.Key, request.Put.Value)
+		// log.Infof("put key: %s, value: %s", request.Put.Key, request.Put.Value)
 		key, cf := request.Put.Key, request.Put.Cf
 		value := request.Put.Value
 		KvWb.SetCF(cf, key, value)
@@ -214,7 +214,7 @@ func (d *peerMsgHandler) handleCommittedNormalEntry(entry *eraftpb.Entry, KvWb *
 		})
 		// KvWb.WriteToDB(d.peerStorage.Engines.Kv)
 	case raft_cmdpb.CmdType_Delete:
-		log.Infof("delete key: %s", request.Delete.Key)
+		// log.Infof("delete key: %s", request.Delete.Key)
 		key, cf := request.Delete.Key, request.Delete.Cf
 		KvWb.DeleteCF(cf, key)
 		resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
@@ -222,7 +222,7 @@ func (d *peerMsgHandler) handleCommittedNormalEntry(entry *eraftpb.Entry, KvWb *
 			Delete:  &raft_cmdpb.DeleteResponse{},
 		})
 	case raft_cmdpb.CmdType_Snap:
-		log.Infof("applyNormalRequest %d Snap %v", d.PeerId(), d.Region())
+		// log.Infof("applyNormalRequest %d Snap %v", d.PeerId(), d.Region())
 		d.peerStorage.applyState.AppliedIndex = entry.Index
 		if err := KvWb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState); err != nil {
 			log.Fatalf("set meta error %v", err)
@@ -341,6 +341,10 @@ func (d *peerMsgHandler) notifyHeartbeatScheduler(region *metapb.Region, peer *p
 // 在处理完RaftCmdRequest之后需要给raftCMD.Callback里发送response，client才能收到leader的响应。
 // Proposal 的回复处理至关重要，处理不好会出现很多的 Request timeout。
 func (d *peerMsgHandler) processProposals(entry *eraftpb.Entry, response *raft_cmdpb.RaftCmdResponse, txn *badger.Txn) {
+	if response == nil && txn == nil {
+		log.Infof("%s: It's a non-reply commit entry[%v]: %d-%d", d.Tag, entry.EntryType, entry.Index, entry.Term)
+		return
+	}
 	// 1.只有Leader才会将上层的消息加入到proposals中；
 	for len(d.proposals) > 0 {
 		proposal := d.proposals[0]
@@ -374,7 +378,7 @@ func (d *peerMsgHandler) processProposals(entry *eraftpb.Entry, response *raft_c
 
 		// 可以根据index与term唯一确定一个raftCMD，该Index的消息在此Term达成共识
 		if entry.Index == proposal.index {
-			log.Infof("%s proposal %d-%d is ok", d.Tag, proposal.index, proposal.term)
+			// log.Infof("%s proposal %d-%d is ok", d.Tag, proposal.index, proposal.term)
 			proposal.cb.Txn = txn
 			proposal.cb.Done(response)
 			d.proposals = d.proposals[1:]

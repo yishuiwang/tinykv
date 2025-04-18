@@ -96,6 +96,7 @@ func (l *RaftLog) maybeCompact() {
 	firstIndex, _ := l.storage.FirstIndex()
 	if firstIndex > l.FirstIndex() && len(l.entries) > 0 {
 		entries := l.entries[firstIndex-l.FirstIndex():]
+		l.entries = make([]pb.Entry, len(entries))
 		copy(l.entries, entries)
 		l.dummyIndex = firstIndex - 1
 	}
@@ -180,7 +181,15 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if i > l.LastIndex() {
 		return 0, ErrUnavailable
 	}
-	// 4.日志在 entries 中
+	// 4.日志在 storage 中
+	if i == l.dummyIndex {
+		term, err := l.storage.Term(i)
+		if err != nil {
+			return 0, err
+		}
+		return term, nil
+	}
+	// 5.日志在 entries 中
 	offset := l.FirstIndex()
 	return l.entries[i-offset].Term, nil
 }
@@ -192,7 +201,12 @@ func (l *RaftLog) Entries(left, right uint64) ([]pb.Entry, error) {
 	}
 	firstIndex := l.FirstIndex()
 	lastIndex := l.LastIndex()
-
+	// printf left, right, l.firstIndex, l.LastIndex(), len(l.entries)。
+	log.Warnf("left=%d, right=%d, firstIndex=%d, lastIndex=%d, len(l.entries)=%d", left, right, firstIndex, lastIndex, len(l.entries))
+	// 打印前三条日志
+	for i := 0; i < 3 && i < len(l.entries); i++ {
+		log.Warnf("entries[%d]: %+v", i, l.entries[i].String())
+	}
 	if left >= firstIndex && right <= lastIndex+1 {
 		return l.entries[left-firstIndex : right-firstIndex], nil
 	}
@@ -261,7 +275,10 @@ func (l *RaftLog) handleConflict(entries []*pb.Entry) {
 		return
 	}
 	if conflictIndex < l.FirstIndex() {
-		log.Panic("conflictIndex < l.FirstIndex()")
+		log.Warnf("raft entries[0] %+v", l.entries[0].String())
+		log.Warnf("msg entries[0] %+v", entries[0].String())
+		log.Warnf("firstIndex=%d,lastIndex=%d,committed=%d,applied=%d", l.FirstIndex(), l.LastIndex(), l.committed, l.applied)
+		log.Panicf("conflictIndex < l.FirstIndex(), conflictIndex=%d, l.FirstIndex()=%d", conflictIndex, l.FirstIndex())
 		return
 	}
 	// 删除冲突的日志往后所有的日志

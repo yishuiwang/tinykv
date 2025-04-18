@@ -20,7 +20,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// 1.发送的日志已经被压缩,改为发送快照
 	// 2.节点刚被创建，发送快照
 	if errors.Is(err, ErrCompacted) || pr.Next <= util.RaftInvalidIndex {
-		// log.Warnf("entry compacted, send snapshot to %d", to)
+		log.Warnf("entry compacted, send snapshot to %d", to)
 		return r.sendSnapshot(to)
 	}
 	lastIndex := r.RaftLog.LastIndex()
@@ -30,9 +30,11 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 
 	entries, _ := r.RaftLog.Entries(pr.Next, lastIndex+1)
-	entry := make([]*pb.Entry, 0)
-	for _, e := range entries {
-		entry = append(entry, &e)
+	entry := make([]*pb.Entry, 0, len(entries)) // Pre-allocate capacity
+	for i := range entries {
+		// Assuming entries is []pb.Entry, entries[i] is the actual entry value.
+		// Take the address of the element *directly from the source slice*.
+		entry = append(entry, &entries[i])
 	}
 
 	msg := pb.Message{
@@ -46,7 +48,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Index:   preLogIndex,
 	}
 	r.msgs = append(r.msgs, msg)
-	log.Infof("raft %d send append to %d, len entries %v", r.id, to, len(entries))
+	if len(entry) > 0 {
+		log.Warnf("pr[%v].Next=%d, pr[term]=%d, lastIndex=%d, lastTerm=%d", to, pr.Next, preLogTerm, lastIndex, entry[0].Term)
+		log.Warnf("raft %d send append to %d, len entries %v,entries[0]:=%+v", r.id, to, len(entries), entries[0].String())
+	}
 	return true
 }
 

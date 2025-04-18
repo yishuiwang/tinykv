@@ -318,7 +318,7 @@ func (r *Raft) becomeLeader() {
 // reference: https://github.com/RinChanNOWWW/tinykv-impl/blob/master/raft/raft.go#L791
 func (r *Raft) updateCommit() {
 	commitUpdate := false
-	log.Infof("raft %d try to update commit %d lastindex %d", r.id, r.RaftLog.committed, r.RaftLog.LastIndex())
+	// log.Infof("raft %d try to update commit %d lastindex %d", r.id, r.RaftLog.committed, r.RaftLog.LastIndex())
 	//for i, p := range r.Prs {
 	//	log.Infof("raft %d prs %d match %d next %d", r.id, i, p.Match, p.Next)
 	//}
