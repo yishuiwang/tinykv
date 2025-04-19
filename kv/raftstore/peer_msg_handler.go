@@ -155,6 +155,71 @@ func (d *peerMsgHandler) handleCommittedAdminEntry(entry *eraftpb.Entry, KvWb *e
 		// 在propose阶段就已经处理了，没有进行committed
 		log.Fatalf("peer %d handle committed transfer leader", d.PeerId())
 	case raft_cmdpb.AdminCmdType_Split:
+		splitReq := req.AdminRequest.GetSplit()
+		log.Errorf("%s handle split %d", d.Tag, splitReq.NewRegionId)
+
+		originalRegion := d.Region()
+		leftRegion := new(metapb.Region)
+		rightRegion := new(metapb.Region)
+		//
+		util.CloneMsg(originalRegion, leftRegion)
+		util.CloneMsg(originalRegion, rightRegion)
+
+		leftRegion.RegionEpoch.Version++
+		rightRegion.RegionEpoch.Version++
+		// originalPeers: [{Id:101, Store:1}, {Id:102, Store:2}, {Id:103, Store:3}]
+		// leftRegion:  [{Id:101, Store:1}, {Id:102, Store:2}, {Id:103, Store:3}]
+		// rightRegion: [{Id:201, Store:1}, {Id:202, Store:2}, {Id:203, Store:3}]
+		newPeers := make([]*metapb.Peer, len(splitReq.NewPeerIds))
+		for i, peeer := range leftRegion.Peers {
+			newPeers[i] = &metapb.Peer{
+				Id:      splitReq.NewPeerIds[i],
+				StoreId: peeer.StoreId,
+			}
+			log.Infof("%s new peer %d", d.Tag, splitReq.NewPeerIds[i])
+		}
+
+		rightRegion.Id = splitReq.NewRegionId
+		rightRegion.Peers = newPeers
+		// [1,100) -> [1,50), [50,100)
+		rightRegion.StartKey = splitReq.SplitKey
+		rightRegion.EndKey = originalRegion.EndKey
+		leftRegion.EndKey = splitReq.SplitKey
+
+		// 持久化 leftRegion 和 rightRegion 的信息。
+		meta.WriteRegionState(KvWb, leftRegion, rspb.PeerState_Normal)
+		meta.WriteRegionState(KvWb, rightRegion, rspb.PeerState_Normal)
+
+		// 通过 createPeer() 方法创建新的 peer 并注册进 router，同时发送 message.MsgTypeStart 启动 peer。
+		newPeer, err := createPeer(d.ctx.store.Id, d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, rightRegion)
+		if err != nil {
+			log.Fatalf("createPeer err:%s", err)
+		}
+		d.ctx.router.register(newPeer)
+		d.ctx.router.send(newPeer.PeerId(), message.NewMsg(message.MsgTypeStart, "new peer"))
+
+		// 更新 storeMeta 里面的 regionRanges，同时使用 storeMeta.setRegion() 进行设置。注意加锁。
+		storeMeta := d.ctx.storeMeta
+		storeMeta.Lock()
+		defer storeMeta.Unlock()
+
+		storeMeta.regionRanges.Delete(&regionItem{region: originalRegion})
+		storeMeta.setRegion(leftRegion, d.peer)
+		storeMeta.setRegion(rightRegion, newPeer)
+		storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: leftRegion})
+		storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: rightRegion})
+
+		d.notifyHeartbeatScheduler(leftRegion, d.peer)
+		d.notifyHeartbeatScheduler(rightRegion, newPeer)
+
+		// resp := &raft_cmdpb.RaftCmdResponse{
+		// 	AdminResponse: &raft_cmdpb.AdminResponse{
+		// 		CmdType: raft_cmdpb.AdminCmdType_Split,
+		// 		Split: &raft_cmdpb.SplitResponse{
+		// 			Regions: []*metapb.Region{leftRegion, rightRegion},
+		// 		},
+		// 	},
+		// }
 	}
 }
 
@@ -534,6 +599,14 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 			NodeId:     req.ChangePeer.Peer.Id,
 			Context:    ctx,
 		})
+	case raft_cmdpb.AdminCmdType_Split:
+		data, _ := msg.Marshal()
+		d.RaftGroup.Propose(data)
+		// d.proposals = append(d.proposals, &proposal{
+		// 	index: d.nextProposalIndex(),
+		// 	term:  d.Term(),
+		// 	cb:    cb,
+		// })
 	}
 }
 
