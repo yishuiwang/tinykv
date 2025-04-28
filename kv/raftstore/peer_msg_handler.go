@@ -425,7 +425,7 @@ func (d *peerMsgHandler) notifyHeartbeatScheduler(region *metapb.Region, peer *p
 // Proposal 的回复处理至关重要，处理不好会出现很多的 Request timeout。
 func (d *peerMsgHandler) processProposals(entry *eraftpb.Entry, response *raft_cmdpb.RaftCmdResponse, txn *badger.Txn) {
 	if response == nil && txn == nil {
-		log.Infof("%s: It's a non-reply commit entry[%v]: %d-%d", d.Tag, entry.EntryType, entry.Index, entry.Term)
+		// log.Infof("%s: It's a non-reply commit entry[%v]: %d-%d", d.Tag, entry.EntryType, entry.Index, entry.Term)
 		return
 	}
 
@@ -557,67 +557,73 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 
 	// Your Code Here (2B).
-	if msg.AdminRequest != nil {
-		d.proposeAdminRequest(msg, cb)
-	} else {
-		d.proposeNormalRequest(msg, cb)
-	}
-}
-
-func (d *peerMsgHandler) proposeNormalRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	data, err := msg.Marshal()
-	if err != nil {
-		log.Fatalf("err:%s", err)
-	}
-	d.proposals = append(d.proposals, &proposal{
+	p := &proposal{
 		index: d.nextProposalIndex(),
 		term:  d.Term(),
 		cb:    cb,
-	})
-	err = d.RaftGroup.Propose(data)
-	if err != nil {
-		cb.Done(ErrResp(err))
-		return
 	}
-}
+	if msg.AdminRequest != nil {
+		if err := d.proposeAdminRequest(msg); err != nil {
+			cb.Done(ErrResp(err))
+			return
+		}
+	} else {
+		if err := d.proposeNormalRequest(msg); err != nil {
+			cb.Done(ErrResp(err))
+			return
+		}
+	}
 
-func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	req := msg.AdminRequest
-	switch req.CmdType {
-	case raft_cmdpb.AdminCmdType_CompactLog:
-		data, _ := msg.Marshal()
-		d.RaftGroup.Propose(data)
-	case raft_cmdpb.AdminCmdType_TransferLeader:
-		d.RaftGroup.TransferLeader(req.TransferLeader.Peer.Id)
-		cb.Done(&raft_cmdpb.RaftCmdResponse{
+	// 所有状态变更都必须通过 Raft Log 复制到所有节点。但是 transfer leader 不需要节点达成共识
+	if msg.AdminRequest != nil && msg.AdminRequest.TransferLeader != nil {
+		resp := &raft_cmdpb.RaftCmdResponse{
 			Header: &raft_cmdpb.RaftResponseHeader{},
 			AdminResponse: &raft_cmdpb.AdminResponse{
 				CmdType:        raft_cmdpb.AdminCmdType_TransferLeader,
 				TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
 			},
-		})
+		}
+		cb.Done(resp)
+		return
+	}
+
+	if cb == nil {
+		return
+	}
+
+	d.proposals = append(d.proposals, p)
+}
+
+func (d *peerMsgHandler) proposeNormalRequest(msg *raft_cmdpb.RaftCmdRequest) error {
+	data, err := msg.Marshal()
+	if err != nil {
+		return err
+	}
+
+	return d.RaftGroup.Propose(data)
+}
+
+func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest) error {
+	req := msg.AdminRequest
+	switch req.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		data, _ := msg.Marshal()
+		return d.RaftGroup.Propose(data)
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+		d.RaftGroup.TransferLeader(req.TransferLeader.Peer.Id)
 	case raft_cmdpb.AdminCmdType_ChangePeer:
-		d.proposals = append(d.proposals, &proposal{
-			index: d.nextProposalIndex(),
-			term:  d.Term(),
-			cb:    cb,
-		})
 		ctx, _ := msg.Marshal()
-		d.RaftGroup.ProposeConfChange(eraftpb.ConfChange{
+		return d.RaftGroup.ProposeConfChange(eraftpb.ConfChange{
 			ChangeType: req.ChangePeer.ChangeType,
 			NodeId:     req.ChangePeer.Peer.Id,
 			Context:    ctx,
 		})
 	case raft_cmdpb.AdminCmdType_Split:
 		data, _ := msg.Marshal()
-		// 需要先添加proposal，然后调用Propose
-		d.proposals = append(d.proposals, &proposal{
-			index: d.nextProposalIndex(),
-			term:  d.Term(),
-			cb:    cb,
-		})
-		d.RaftGroup.Propose(data)
+		return d.RaftGroup.Propose(data)
 	}
+
+	return nil
 }
 
 func (d *peerMsgHandler) onTick() {
