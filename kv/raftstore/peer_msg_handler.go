@@ -121,16 +121,36 @@ func (d *peerMsgHandler) handleCommittedEntry(entry *eraftpb.Entry, KvWb *engine
 		}
 	}
 
+	if ok, errEpochNotMatching := maybeCheckRegionEpoch(msg, d.Region(), true); ok {
+		log.Warnf("%s handle committed entry %d-%d, but not for me", d.Tag, entry.Index, entry.Term)
+		resp := ErrResp(errEpochNotMatching)
+		d.processProposals(entry, resp, nil)
+		return
+	}
+
+	if ok, key := maybeGetRequestKey(msg); ok {
+		if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+			log.Warnf("%s handle committed entry %d-%d, but key %s not in region %v", d.Tag, entry.Index, entry.Term, key, d.Region())
+			resp := ErrResp(err)
+			d.processProposals(entry, resp, nil)
+			return
+		}
+	}
+
+	var txn *badger.Txn
+	var resp *raft_cmdpb.RaftCmdResponse
 	switch entry.EntryType {
 	case eraftpb.EntryType_EntryNormal:
 		if msg.AdminRequest != nil {
+			// admin消息不需要回复
 			d.handleCommittedAdminEntry(entry, KvWb)
 		} else {
-			d.handleCommittedNormalEntry(entry, KvWb)
+			resp, txn = d.handleCommittedNormalEntry(entry, KvWb)
 		}
 	case eraftpb.EntryType_EntryConfChange:
-		d.handleCommittedConfChangeEntry(entry, KvWb)
+		resp = d.handleCommittedConfChangeEntry(entry, KvWb)
 	}
+	d.processProposals(entry, resp, txn)
 }
 
 func (d *peerMsgHandler) handleCommittedAdminEntry(entry *eraftpb.Entry, KvWb *engine_util.WriteBatch) {
@@ -196,7 +216,12 @@ func (d *peerMsgHandler) handleCommittedAdminEntry(entry *eraftpb.Entry, KvWb *e
 			log.Fatalf("createPeer err:%s", err)
 		}
 		d.ctx.router.register(newPeer)
-		d.ctx.router.send(newPeer.PeerId(), message.NewMsg(message.MsgTypeStart, "new peer"))
+		d.ctx.router.register(newPeer)
+		if err := d.ctx.router.send(rightRegion.Id, message.Msg{
+			Type: message.MsgTypeStart,
+		}); err != nil {
+			panic("This should not happen")
+		}
 
 		// 更新 storeMeta 里面的 regionRanges，同时使用 storeMeta.setRegion() 进行设置。注意加锁。
 		storeMeta := d.ctx.storeMeta
@@ -212,18 +237,10 @@ func (d *peerMsgHandler) handleCommittedAdminEntry(entry *eraftpb.Entry, KvWb *e
 		d.notifyHeartbeatScheduler(leftRegion, d.peer)
 		d.notifyHeartbeatScheduler(rightRegion, newPeer)
 
-		// resp := &raft_cmdpb.RaftCmdResponse{
-		// 	AdminResponse: &raft_cmdpb.AdminResponse{
-		// 		CmdType: raft_cmdpb.AdminCmdType_Split,
-		// 		Split: &raft_cmdpb.SplitResponse{
-		// 			Regions: []*metapb.Region{leftRegion, rightRegion},
-		// 		},
-		// 	},
-		// }
 	}
 }
 
-func (d *peerMsgHandler) handleCommittedNormalEntry(entry *eraftpb.Entry, KvWb *engine_util.WriteBatch) {
+func (d *peerMsgHandler) handleCommittedNormalEntry(entry *eraftpb.Entry, KvWb *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *badger.Txn) {
 	req := new(raft_cmdpb.RaftCmdRequest)
 	err := req.Unmarshal(entry.Data)
 	if err != nil {
@@ -231,7 +248,7 @@ func (d *peerMsgHandler) handleCommittedNormalEntry(entry *eraftpb.Entry, KvWb *
 	}
 	if len(req.Requests) == 0 {
 		log.Infof("%s Ignore an empty entry", d.Tag)
-		return
+		return nil, nil
 	}
 	if len(req.Requests) > 1 {
 		panic("More requests")
@@ -305,10 +322,10 @@ func (d *peerMsgHandler) handleCommittedNormalEntry(entry *eraftpb.Entry, KvWb *
 		txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 	}
 
-	d.processProposals(entry, resp, txn)
+	return resp, txn
 }
 
-func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb *engine_util.WriteBatch) {
+func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	cc := new(eraftpb.ConfChange)
 	err := cc.Unmarshal(entry.Data)
 	if err != nil {
@@ -324,8 +341,8 @@ func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb
 	err = util.CheckRegionEpoch(msg, d.Region(), true)
 	if err != nil {
 		log.Warnf("CheckRegionEpoch err:%s", err)
-		d.processProposals(entry, ErrResp(err), nil)
-		return
+		resp := ErrResp(err)
+		return resp
 	}
 
 	changePeer := msg.AdminRequest.ChangePeer
@@ -350,7 +367,7 @@ func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb
 	case eraftpb.ConfChangeType_AddNode:
 		if peerExists {
 			log.Warnf("%s apply add node %d, but already exists", d.Tag, cc.NodeId)
-			return
+			return nil
 		}
 		log.Warnf("%s apply add node %d Region.ConfVer %d", d.Tag, cc.NodeId, d.Region().RegionEpoch.ConfVer)
 		d.Region().Peers = append(d.Region().Peers, targetPeer)
@@ -359,14 +376,14 @@ func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb
 	case eraftpb.ConfChangeType_RemoveNode:
 		if !peerExists {
 			log.Warnf("%s apply remove node %d, but not exists", d.Tag, cc.NodeId)
-			return
+			return nil
 		}
 		// 如果删除的节点是自己，销毁自己
 		if cc.NodeId == d.PeerId() {
 			log.Warnf("%s begin remove self %d", d.Tag, cc.NodeId)
 			d.destroyPeer()
 			// 此时完成当前 entry apply 后应直接退出，不能将数据写到 badger 里
-			return
+			return nil
 		}
 		log.Warnf("%s apply remove node %d Region.ConfVer %d", d.Tag, cc.NodeId, d.Region().RegionEpoch.ConfVer)
 		region.Peers = append(region.Peers[:peerIndex], region.Peers[peerIndex+1:]...)
@@ -379,13 +396,14 @@ func (d *peerMsgHandler) handleCommittedConfChangeEntry(entry *eraftpb.Entry, wb
 	// 更新raft节点
 	d.RaftGroup.ApplyConfChange(*cc)
 
+	d.notifyHeartbeatScheduler(region, d.peer)
+
 	resp := &raft_cmdpb.RaftCmdResponse{AdminResponse: &raft_cmdpb.AdminResponse{
 		CmdType:    raft_cmdpb.AdminCmdType_ChangePeer,
 		ChangePeer: &raft_cmdpb.ChangePeerResponse{},
 	}}
-	d.processProposals(entry, resp, nil)
 
-	d.notifyHeartbeatScheduler(region, d.peer)
+	return resp
 }
 
 func (d *peerMsgHandler) notifyHeartbeatScheduler(region *metapb.Region, peer *peer) {
@@ -410,7 +428,7 @@ func (d *peerMsgHandler) processProposals(entry *eraftpb.Entry, response *raft_c
 		log.Infof("%s: It's a non-reply commit entry[%v]: %d-%d", d.Tag, entry.EntryType, entry.Index, entry.Term)
 		return
 	}
-	// 1.只有Leader才会将上层的消息加入到proposals中；
+
 	for len(d.proposals) > 0 {
 		proposal := d.proposals[0]
 		// 说明当前处理的日志条目来自旧Leader，无法处理后续提案，直接返回
@@ -443,7 +461,7 @@ func (d *peerMsgHandler) processProposals(entry *eraftpb.Entry, response *raft_c
 
 		// 可以根据index与term唯一确定一个raftCMD，该Index的消息在此Term达成共识
 		if entry.Index == proposal.index {
-			// log.Infof("%s proposal %d-%d is ok", d.Tag, proposal.index, proposal.term)
+			log.Infof("%s proposal %d-%d is ok", d.Tag, proposal.index, proposal.term)
 			proposal.cb.Txn = txn
 			proposal.cb.Done(response)
 			d.proposals = d.proposals[1:]
@@ -452,6 +470,7 @@ func (d *peerMsgHandler) processProposals(entry *eraftpb.Entry, response *raft_c
 
 		panic(fmt.Sprintf("%s proposal %d-%d not found", d.Tag, proposal.index, proposal.term))
 	}
+
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -529,6 +548,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
+
+	if ok, key := maybeGetRequestKey(msg); ok {
+		if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+			cb.Done(ErrResp(err))
+			return
+		}
+	}
+
 	// Your Code Here (2B).
 	if msg.AdminRequest != nil {
 		d.proposeAdminRequest(msg, cb)
@@ -538,24 +565,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 }
 
 func (d *peerMsgHandler) proposeNormalRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	var key []byte
-	req := msg.Requests[0]
-	switch req.CmdType {
-	case raft_cmdpb.CmdType_Get:
-		key = req.Get.Key
-	case raft_cmdpb.CmdType_Put:
-		key = req.Put.Key
-	case raft_cmdpb.CmdType_Delete:
-		key = req.Delete.Key
-	}
-	err := util.CheckKeyInRegion(key, d.Region())
-	if err != nil {
-		cb.Done(ErrResp(err))
-		return
-	}
-
-	log.Infof("receive client NormalRequest %d, type: %d", d.regionId, req.CmdType)
-
 	data, err := msg.Marshal()
 	if err != nil {
 		log.Fatalf("err:%s", err)
@@ -601,12 +610,13 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		})
 	case raft_cmdpb.AdminCmdType_Split:
 		data, _ := msg.Marshal()
+		// 需要先添加proposal，然后调用Propose
+		d.proposals = append(d.proposals, &proposal{
+			index: d.nextProposalIndex(),
+			term:  d.Term(),
+			cb:    cb,
+		})
 		d.RaftGroup.Propose(data)
-		// d.proposals = append(d.proposals, &proposal{
-		// 	index: d.nextProposalIndex(),
-		// 	term:  d.Term(),
-		// 	cb:    cb,
-		// })
 	}
 }
 
@@ -1066,4 +1076,49 @@ func newCompactLogRequest(regionID uint64, peer *metapb.Peer, compactIndex, comp
 		},
 	}
 	return req
+}
+
+func maybeGetRequestKey(req *raft_cmdpb.RaftCmdRequest) (bool, []byte) {
+	// try to get split key
+	if req.AdminRequest != nil && req.AdminRequest.Split != nil {
+		return true, req.AdminRequest.Split.SplitKey
+	}
+
+	if req.Requests == nil {
+		return false, nil
+	}
+
+	if len(req.Requests) == 0 {
+		return false, nil
+	}
+
+	request := req.Requests[0]
+	switch request.CmdType {
+	case raft_cmdpb.CmdType_Invalid:
+	case raft_cmdpb.CmdType_Get:
+		return true, request.Get.Key
+	case raft_cmdpb.CmdType_Put:
+		return true, request.Put.Key
+	case raft_cmdpb.CmdType_Delete:
+		return true, request.Delete.Key
+	case raft_cmdpb.CmdType_Snap:
+		return false, nil
+	}
+	panic("This should not happen")
+}
+
+func maybeCheckRegionEpoch(msg *raft_cmdpb.RaftCmdRequest, region *metapb.Region, includeRegion bool) (bool, *util.ErrEpochNotMatch) {
+	if msg.Header == nil {
+		return false, nil
+	}
+
+	if err := util.CheckRegionEpoch(msg, region, includeRegion); err != nil {
+		if errEpochNotMatching, ok := err.(*util.ErrEpochNotMatch); ok {
+			return true, errEpochNotMatching
+		} else {
+			panic("This should not happen")
+		}
+	}
+
+	return false, nil
 }
